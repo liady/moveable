@@ -1,26 +1,30 @@
-import { prefix, getLineStyle, getDirection, getAbsolutePosesByState, triggerEvent, fillParams } from "../utils";
+import {
+    prefix, getLineStyle, getDirection, getAbsolutePosesByState,
+    triggerEvent, fillParams, fillEndParams,
+ } from "../utils";
 import {
     convertDimension, invert, multiply,
-    convertMatrixtoCSS, caculate,
+    caculate,
     createIdentityMatrix,
     ignoreDimension,
-    multiplyCSS,
     minus,
     createWarpMatrix,
     getRad,
     plus,
-} from "@moveable/matrix";
+} from "../matrix";
 import { NEARBY_POS } from "../consts";
-import { setDragStart, getDragDist, getPosIndexesByDirection } from "../DraggerUtils";
-import MoveableManager from "../MoveableManager";
+import {
+    setDragStart, getDragDist, getPosIndexesByDirection, setDefaultTransformIndex,
+    fillTransformStartEvent, resolveTransformEvent, convertTransformFormat, fillOriginalTransform, getTransfromMatrix
+} from "../gesto/GestoUtils";
 import {
     WarpableProps, ScalableProps, ResizableProps,
     Renderer, SnappableProps, SnappableState,
-    OnWarpStart, OnWarp, OnWarpEnd,
+    OnWarpStart, OnWarp, OnWarpEnd, MoveableManagerInterface,
 } from "../types";
 import { hasClass, dot } from "@daybrush/utils";
 import { renderAllDirections } from "../renderDirection";
-import { checkSnapPoses, hasGuidelines, getNearestSnapGuidelineInfo } from "./Snappable";
+import { hasGuidelines, checkMoveableSnapBounds } from "./Snappable";
 
 function getMiddleLinePos(pos1: number[], pos2: number[]) {
     return pos1.map((pos, i) => dot(pos, pos2[i], 1, 2));
@@ -47,18 +51,27 @@ function isValidPos(poses1: number[][], poses2: number[][]) {
     return true;
 }
 
+/**
+ * @namespace Moveable.Warpable
+ * @description Warpable indicates whether the target can be warped(distorted, bented).
+ */
 export default {
     name: "warpable",
     ableGroup: "size",
     props: {
         warpable: Boolean,
         renderDirections: Array,
-    },
-    render(moveable: MoveableManager<ResizableProps & ScalableProps & WarpableProps>, React: Renderer) {
+    } as const,
+    events: {
+        onWarpStart: "warpStart",
+        onWarp: "warp",
+        onWarpEnd: "warpEnd",
+    } as const,
+    render(moveable: MoveableManagerInterface<ResizableProps & ScalableProps & WarpableProps>, React: Renderer): any[] {
         const { resizable, scalable, warpable } = moveable.props;
 
         if (resizable || scalable || !warpable) {
-            return;
+            return [];
         }
         const { pos1, pos2, pos3, pos4 } = moveable.state;
 
@@ -79,11 +92,14 @@ export default {
             ...renderAllDirections(moveable, React),
         ];
     },
-    dragControlCondition(target: HTMLElement | SVGElement) {
-        return hasClass(target, prefix("direction"));
+    dragControlCondition(e: any) {
+        if (e.isRequest) {
+            return false;
+        }
+        return hasClass(e.inputEvent.target, prefix("direction"));
     },
     dragControlStart(
-        moveable: MoveableManager<WarpableProps, SnappableState>,
+        moveable: MoveableManagerInterface<WarpableProps, SnappableState>,
         e: any,
     ) {
         const { datas, inputEvent } = e;
@@ -110,25 +126,32 @@ export default {
         datas.left = left;
         datas.top = top;
 
-        setDragStart(moveable, { datas });
+        setDragStart(moveable, e);
+        setDefaultTransformIndex(e);
+
         datas.poses = [
             [0, 0],
             [width, 0],
             [0, height],
             [width, height],
-        ].map((p, i) => minus(p, transformOrigin));
+        ].map(p => minus(p, transformOrigin));
 
         datas.nextPoses = datas.poses.map(([x, y]: number[]) => caculate(datas.warpTargetMatrix, [x, y, 0, 1], 4));
-        datas.startMatrix = createIdentityMatrix(4);
+        datas.startValue = createIdentityMatrix(4);
         datas.prevMatrix = createIdentityMatrix(4);
         datas.absolutePoses = getAbsolutePosesByState(state);
         datas.posIndexes = getPosIndexesByDirection(direction);
-        state.snapDirection = direction;
+
+        state.snapRenderInfo = {
+            request: e.isRequest,
+            direction,
+        };
 
         const params = fillParams<OnWarpStart>(moveable, e, {
             set: (matrix: number[]) => {
-                datas.startMatrix = matrix;
+                datas.startValue = matrix;
             },
+            ...fillTransformStartEvent(e),
         });
         const result = triggerEvent(moveable, "onWarpStart", params);
         if (result !== false) {
@@ -137,13 +160,13 @@ export default {
         return datas.isWarp;
     },
     dragControl(
-        moveable: MoveableManager<WarpableProps & SnappableProps, SnappableState>,
+        moveable: MoveableManagerInterface<WarpableProps & SnappableProps, SnappableState>,
         e: any,
     ) {
-        const { datas } = e;
+        const { datas, isRequest } = e;
         let { distX, distY } = e;
         const {
-            targetInverseMatrix, prevMatrix, isWarp, startMatrix,
+            targetInverseMatrix, prevMatrix, isWarp, startValue,
             poses,
             posIndexes,
             absolutePoses,
@@ -152,7 +175,7 @@ export default {
         if (!isWarp) {
             return false;
         }
-
+        resolveTransformEvent(e, "matrix3d");
         if (hasGuidelines(moveable, "warpable")) {
             const selectedPoses: number[][] = posIndexes.map((index: number) => absolutePoses[index]);
 
@@ -162,17 +185,18 @@ export default {
                     (selectedPoses[0][1] + selectedPoses[1][1]) / 2,
                 ]);
             }
+
             const {
                 horizontal: horizontalSnapInfo,
                 vertical: verticalSnapInfo,
-            } = checkSnapPoses(
+            } = checkMoveableSnapBounds(
                 moveable,
-                selectedPoses.map(pos => pos[0] + distX),
-                selectedPoses.map(pos => pos[1] + distY),
+                isRequest,
+                selectedPoses.map(pos => [pos[0] + distX, pos[1] + distY]),
             );
 
-            distY -= getNearestSnapGuidelineInfo(horizontalSnapInfo).offset;
-            distX -= getNearestSnapGuidelineInfo(verticalSnapInfo).offset;
+            distY -= horizontalSnapInfo.offset;
+            distX -= verticalSnapInfo.offset;
         }
 
         const dist = getDragDist({ datas, distX, distY }, true);
@@ -189,37 +213,43 @@ export default {
         }
         const h = createWarpMatrix(
             poses[0],
-            poses[1],
             poses[2],
+            poses[1],
             poses[3],
             nextPoses[0],
-            nextPoses[1],
             nextPoses[2],
+            nextPoses[1],
             nextPoses[3],
         );
 
         if (!h.length) {
             return false;
         }
+        // B * A * M
+        const afterMatrix = multiply(targetInverseMatrix, h, 4);
 
-        const matrix = convertMatrixtoCSS(multiply(targetInverseMatrix, h, 4));
-        const transform = `${datas.targetTransform} matrix3d(${matrix.join(",")})`;
+        // B * M * A
+        const matrix = getTransfromMatrix(datas, afterMatrix, true);
 
-        const delta = multiplyCSS(invert(prevMatrix, 4), matrix, 4);
+        const delta = multiply(invert(prevMatrix, 4), matrix, 4);
 
         datas.prevMatrix = matrix;
+        const totalMatrix = multiply(startValue, matrix, 4);
+        const nextTransform = convertTransformFormat(
+            datas, `matrix3d(${totalMatrix.join(", ")})`, `matrix3d(${matrix.join(", ")})`);
 
+        fillOriginalTransform(e, nextTransform);
         triggerEvent(moveable, "onWarp", fillParams<OnWarp>(moveable, e, {
             delta,
-            matrix: multiplyCSS(startMatrix, matrix, 4),
-            multiply: multiplyCSS,
+            matrix: totalMatrix,
             dist: matrix,
-            transform,
+            multiply,
+            transform: nextTransform,
         }));
         return true;
     },
     dragControlEnd(
-        moveable: MoveableManager<WarpableProps>,
+        moveable: MoveableManagerInterface<WarpableProps>,
         e: any,
     ) {
         const { datas, isDrag } = e;
@@ -228,9 +258,78 @@ export default {
         }
         datas.isWarp = false;
 
-        triggerEvent(moveable, "onWarpEnd", fillParams<OnWarpEnd>(moveable, e, {
-            isDrag,
-        }));
+        triggerEvent(moveable, "onWarpEnd", fillEndParams<OnWarpEnd>(moveable, e, {}));
         return isDrag;
     },
 };
+
+/**
+ * Whether or not target can be warped. (default: false)
+ * @name Moveable.Warpable#warpable
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body);
+ *
+ * moveable.warpable = true;
+ */
+
+ /**
+ * Set directions to show the control box. (default: ["n", "nw", "ne", "s", "se", "sw", "e", "w"])
+ * @name Moveable.Warpable#renderDirections
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     warpable: true,
+ *     renderDirections: ["n", "nw", "ne", "s", "se", "sw", "e", "w"],
+ * });
+ *
+ * moveable.renderDirections = ["nw", "ne", "sw", "se"];
+ */
+/**
+* When the warp starts, the warpStart event is called.
+* @memberof Moveable.Warpable
+* @event warpStart
+* @param {Moveable.Warpable.OnWarpStart} - Parameters for the warpStart event
+* @example
+* import Moveable from "moveable";
+*
+* const moveable = new Moveable(document.body, { warpable: true });
+* moveable.on("warpStart", ({ target }) => {
+*     console.log(target);
+* });
+*/
+/**
+ * When warping, the warp event is called.
+ * @memberof Moveable.Warpable
+ * @event warp
+ * @param {Moveable.Warpable.OnWarp} - Parameters for the warp event
+ * @example
+ * import Moveable from "moveable";
+ * let matrix = [
+ *  1, 0, 0, 0,
+ *  0, 1, 0, 0,
+ *  0, 0, 1, 0,
+ *  0, 0, 0, 1,
+ * ];
+ * const moveable = new Moveable(document.body, { warpable: true });
+ * moveable.on("warp", ({ target, transform, delta, multiply }) => {
+ *    // target.style.transform = transform;
+ *    matrix = multiply(matrix, delta);
+ *    target.style.transform = `matrix3d(${matrix.join(",")})`;
+ * });
+ */
+/**
+ * When the warp finishes, the warpEnd event is called.
+ * @memberof Moveable.Warpable
+ * @event warpEnd
+ * @param {Moveable.Warpable.OnWarpEnd} - Parameters for the warpEnd event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, { warpable: true });
+ * moveable.on("warpEnd", ({ target, isDrag }) => {
+ *     console.log(target, isDrag);
+ * });
+ */

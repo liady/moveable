@@ -1,13 +1,15 @@
-import MoveableManager from "../MoveableManager";
-import { createWarpMatrix, convertMatrixtoCSS } from "@moveable/matrix";
+import {
+    createWarpMatrix,
+} from "../matrix";
 import { ref } from "framework-utils";
-import { triggerEvent, fillParams, getRect } from "../utils";
-import { Renderer, GroupableProps, DragAreaProps, OnClick } from "../types";
-import { AREA_PIECE, AREA, AVOID, AREA_PIECES } from "../classNames";
-import MoveableGroup from "../MoveableGroup";
-import { addClass, findIndex, removeClass } from "@daybrush/utils";
+import { getRect, caculateInversePosition, makeMatrixCSS, prefix } from "../utils";
+import {
+    Renderer, GroupableProps, DragAreaProps, MoveableManagerInterface, MoveableGroupInterface
+} from "../types";
+import { AREA_PIECE, AVOID, AREA_PIECES } from "../classNames";
+import { addClass, removeClass } from "@daybrush/utils";
 
-function restoreStyle(moveable: MoveableManager) {
+function restoreStyle(moveable: MoveableManagerInterface) {
     const el = moveable.areaElement;
     const { width, height } = moveable.state;
 
@@ -28,15 +30,20 @@ export default {
     name: "dragArea",
     props: {
         dragArea: Boolean,
-    },
-    render(moveable: MoveableManager<GroupableProps>, React: Renderer): any[] {
-        const { target, dragArea, groupable } = moveable.props;
+        passDragArea: Boolean,
+    } as const,
+    events: {
+        onClick: "click",
+        onClickGroup: "clickGroup",
+    } as const,
+    render(moveable: MoveableManagerInterface<GroupableProps>, React: Renderer): any[] {
+        const { target, dragArea, groupable, passDragArea } = moveable.props;
+        const { width, height, renderPoses } = moveable.state;
 
-        const { width, height, pos1, pos2, pos3, pos4 } = moveable.state;
-
+        const className = passDragArea ? prefix("area", "pass") : prefix("area");
         if (groupable) {
             return [
-                <div key="area" ref={ref(moveable, "areaElement")} className={AREA}></div>,
+                <div key="area" ref={ref(moveable, "areaElement")} className={className}></div>,
                 renderPieces(React),
             ];
         }
@@ -48,15 +55,15 @@ export default {
             [width, 0],
             [0, height],
             [width, height],
-            pos1,
-            pos2,
-            pos3,
-            pos4,
+            renderPoses[0],
+            renderPoses[1],
+            renderPoses[2],
+            renderPoses[3],
         );
-        const transform = h.length ? `matrix3d(${convertMatrixtoCSS(h).join(",")})` : "none";
+        const transform = h.length ? makeMatrixCSS(h, true) : "none";
 
         return [
-            <div key="area" ref={ref(moveable, "areaElement")} className={AREA} style={{
+            <div key="area" ref={ref(moveable, "areaElement")} className={className} style={{
                 top: "0px",
                 left: "0px",
                 width: `${width}px`,
@@ -67,22 +74,30 @@ export default {
             renderPieces(React),
         ];
     },
-    dragStart(moveable: MoveableManager, { datas, clientX, clientY, inputEvent }: any) {
+    dragStart(moveable: MoveableManagerInterface, { datas, clientX, clientY, inputEvent }: any) {
+        if (!inputEvent) {
+            return false;
+        }
         datas.isDragArea = false;
-        datas.inputTarget = inputEvent.target;
         const areaElement = moveable.areaElement;
         const {
-            clientRect,
-            pos1, pos2, pos3, pos4,
+            moveableClientRect,
+            renderPoses,
+            rootMatrix,
+            is3d,
         } = moveable.state;
-        const { left, top, width, height } = clientRect;
+        const { left, top } = moveableClientRect;
         const {
             left: relativeLeft,
             top: relativeTop,
-        } = getRect([pos1, pos2, pos3, pos4]);
-        const posX = clientX - left;
-        const posY = clientY - top;
+            width,
+            height,
+        } = getRect(renderPoses);
+        const n = is3d ? 4 : 3;
+        let [posX, posY] = caculateInversePosition(rootMatrix, [clientX - left, clientY - top], n);
 
+        posX -= relativeLeft;
+        posY -= relativeTop;
         const rects = [
             { left: relativeLeft, top: relativeTop, width, height: posY - 10 },
             { left: relativeLeft, top: relativeTop, width: posX - 10, height },
@@ -96,70 +111,60 @@ export default {
                 = `left: ${rect.left}px;top: ${rect.top}px; width: ${rect.width}px; height: ${rect.height}px;`;
         });
         addClass(areaElement, AVOID);
+        return;
     },
-    drag(moveable: MoveableManager, { datas }: any) {
+    drag(moveable: MoveableManagerInterface, { datas, inputEvent }: any) {
+        if (!inputEvent) {
+            return false;
+        }
         if (!datas.isDragArea) {
             datas.isDragArea = true;
             restoreStyle(moveable);
         }
     },
-    dragEnd(moveable: MoveableManager<DragAreaProps>, e: any) {
-        const { inputEvent, isDragArea, datas } = e;
+    dragEnd(moveable: MoveableManagerInterface<DragAreaProps>, e: any) {
+        const { inputEvent, datas } = e;
+        if (!inputEvent) {
+            return false;
+        }
         if (!datas.isDragArea) {
             restoreStyle(moveable);
         }
-
-        const target = moveable.state.target!;
-        const inputTarget = inputEvent.target;
-
-        if (isDragArea || moveable.isMoveableElement(inputTarget)) {
-            return;
-        }
-        const containsTarget = target.contains(inputTarget);
-
-        triggerEvent(moveable, "onClick", fillParams<OnClick>(moveable, e, {
-            inputTarget,
-            isTarget: target === inputTarget,
-            containsTarget,
-        }));
     },
-    dragGroupStart(moveable: MoveableGroup, e: any) {
-        this.dragStart(moveable, e);
+    dragGroupStart(moveable: MoveableGroupInterface, e: any) {
+        return this.dragStart(moveable, e);
     },
-    dragGroup(moveable: MoveableGroup, e: any) {
-        this.drag(moveable, e);
+    dragGroup(moveable: MoveableGroupInterface, e: any) {
+        return this.drag(moveable, e);
     },
     dragGroupEnd(
-        moveable: MoveableGroup,
+        moveable: MoveableGroupInterface<DragAreaProps>,
         e: any,
     ) {
-        const { inputEvent, isDragArea, datas } = e;
-
-        if (!isDragArea) {
-            restoreStyle(moveable);
-        }
-        const prevInputTarget = datas.inputTarget;
-        const inputTarget = inputEvent.target;
-
-        if (isDragArea || moveable.isMoveableElement(inputTarget) || prevInputTarget === inputTarget) {
-            return;
-        }
-        const targets = moveable.props.targets!;
-        let targetIndex = targets.indexOf(inputTarget);
-        const isTarget = targetIndex > -1;
-        let containsTarget = false;
-
-        if (targetIndex === -1) {
-            targetIndex = findIndex(targets, parentTarget => parentTarget.contains(inputTarget));
-            containsTarget = targetIndex > -1;
-        }
-
-        triggerEvent(moveable, "onClickGroup", fillParams(moveable, e, {
-            targets,
-            inputTarget,
-            targetIndex,
-            isTarget,
-            containsTarget,
-        }));
+       return this.dragEnd(moveable, e);
+    },
+    unset(moveable: MoveableManagerInterface<DragAreaProps>) {
+        restoreStyle(moveable);
     },
 };
+
+/**
+ * Add an event to the moveable area instead of the target for stopPropagation. (default: false, true in group)
+ * @name Moveable#dragArea
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *  dragArea: false,
+ * });
+ */
+/**
+ * Set `pointerEvents: none;` css to pass events in dragArea. (default: false)
+ * @name Moveable#passDragArea
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *  dragArea: false,
+ * });
+ */

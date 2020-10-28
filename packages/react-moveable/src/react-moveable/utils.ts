@@ -1,9 +1,8 @@
-import { PREFIX, isWebkit } from "./consts";
+import { PREFIX, IS_WEBKIT605, TINY_NUM, IS_WEBKIT } from "./consts";
 import { prefixNames } from "framework-utils";
-import { splitBracket, isUndefined, isObject, splitUnit, IObject } from "@daybrush/utils";
+import { splitBracket, isUndefined, isObject, splitUnit, IObject, hasClass, isArray, isString } from "@daybrush/utils";
 import {
     multiply, invert,
-    convertCSStoMatrix, convertMatrixtoCSS,
     convertDimension, createIdentityMatrix,
     createOriginMatrix, convertPositionMatrix, caculate,
     multiplies,
@@ -12,10 +11,15 @@ import {
     createScaleMatrix,
     plus,
     getRad,
-} from "@moveable/matrix";
-
-import MoveableManager from "./MoveableManager";
-import { MoveableManagerState, Able, MoveableClientRect } from "./types";
+    ignoreDimension,
+    convertCSStoMatrix,
+    convertMatrixtoCSS,
+} from "./matrix";
+import {
+    MoveableManagerState, Able, MoveableClientRect,
+    MoveableProps, ControlPose, InvertTypes, ArrayFormat, MoveableRefType
+} from "./types";
+import { parse, toMat } from "css-to-mat";
 
 export function round(num: number) {
     return Math.round(num);
@@ -34,17 +38,6 @@ export function createIdentityMatrix3() {
     return createIdentityMatrix(3);
 }
 
-export function getTransform(target: SVGElement | HTMLElement, isInit: true): number[];
-export function getTransform(target: SVGElement | HTMLElement, isInit?: false): "none" | number[];
-export function getTransform(target: SVGElement | HTMLElement, isInit?: boolean) {
-    const transform = getComputedStyle(target).transform!;
-
-    if (!transform || (transform === "none" && !isInit)) {
-        return "none";
-    }
-    return getTransformMatrix(transform);
-}
-
 export function getTransformMatrix(transform: string | number[]) {
     if (!transform || transform === "none") {
         return [1, 0, 0, 1, 0, 0];
@@ -57,7 +50,6 @@ export function getTransformMatrix(transform: string | number[]) {
     return value.split(/s*,\s*/g).map(v => parseFloat(v));
 }
 export function getAbsoluteMatrix(matrix: number[], n: number, origin: number[]) {
-
     return multiplies(
         n,
         createOriginMatrix(origin, n),
@@ -67,13 +59,16 @@ export function getAbsoluteMatrix(matrix: number[], n: number, origin: number[])
 }
 export function measureSVGSize(el: SVGElement, unit: string, isHorizontal: boolean) {
     if (unit === "%") {
-        const viewBox = el.ownerSVGElement!.viewBox.baseVal;
+        const viewBox = getSVGViewBox(el.ownerSVGElement!);
+
         return viewBox[isHorizontal ? "width" : "height"] / 100;
     }
     return 1;
 }
 export function getBeforeTransformOrigin(el: SVGElement) {
     const relativeOrigin = getTransformOrigin(getComputedStyle(el, ":before"));
+
+    console.log(el, getComputedStyle(el).transformOrigin, getComputedStyle(el, ":before").transformOrigin);
 
     return relativeOrigin.map((o, i) => {
         const { value, unit } = splitUnit(o);
@@ -117,37 +112,111 @@ export function getOffsetInfo(
     };
 
 }
-export function caculateMatrixStack(
+export function getOffsetPosInfo(
+    el: HTMLElement | SVGElement,
+    container: SVGElement | HTMLElement | null | undefined,
+    style: CSSStyleDeclaration,
+    isFixed: boolean,
+) {
+    const tagName = el.tagName.toLowerCase();
+    let offsetLeft = (el as HTMLElement).offsetLeft;
+    let offsetTop = (el as HTMLElement).offsetTop;
+
+    if (isFixed) {
+        const containerClientRect = (container || document.documentElement).getBoundingClientRect();
+
+        offsetLeft -= containerClientRect.left;
+        offsetTop -= containerClientRect.top;
+    }
+    // svg
+    const isSVG = isUndefined(offsetLeft);
+    let hasOffset = !isSVG;
+    let origin: number[];
+    let targetOrigin: number[];
+    // inner svg element
+    if (!hasOffset && tagName !== "svg") {
+        origin = IS_WEBKIT605
+            ? getBeforeTransformOrigin(el as SVGElement)
+            : getTransformOrigin(style).map(pos => parseFloat(pos));
+
+        targetOrigin = origin.slice();
+        hasOffset = true;
+
+        if (tagName === "g") {
+            offsetLeft = 0;
+            offsetTop = 0;
+        } else {
+            [
+                offsetLeft, offsetTop, origin[0], origin[1],
+            ] = getSVGGraphicsOffset(el as SVGGraphicsElement, origin);
+        }
+    } else {
+        origin = getTransformOrigin(style).map(pos => parseFloat(pos));
+        targetOrigin = origin.slice();
+    }
+    return {
+        isSVG,
+        hasOffset,
+        offset: [offsetLeft || 0, offsetTop || 0],
+        origin,
+        targetOrigin,
+    };
+}
+export function getBodyOffset(
+    el: HTMLElement| SVGElement,
+    style: CSSStyleDeclaration = window.getComputedStyle(el),
+) {
+    const bodyStyle = window.getComputedStyle(document.body);
+
+    let marginLeft = parseInt(bodyStyle.marginLeft, 10);
+    let marginTop = parseInt(bodyStyle.marginTop, 10);
+
+    if (style.position === "absolute") {
+        if (style.top !== "auto" || style.bottom !== "auto") {
+            marginTop = 0;
+        }
+        if (style.left !== "auto" || style.right !== "auto") {
+            marginLeft = 0;
+        }
+    }
+
+    return [marginLeft, marginTop];
+}
+export function getMatrixStackInfo(
     target: SVGElement | HTMLElement,
-    container: SVGElement | HTMLElement | null,
-    prevMatrix?: number[],
-    prevN?: number,
-): [number[], number[], number[], number[], string, number[], boolean] {
+    container?: SVGElement | HTMLElement | null,
+    // prevMatrix?: number[],
+) {
     let el: SVGElement | HTMLElement | null = target;
     const matrixes: number[][] = [];
-    const isSVGGraphicElement = el.tagName.toLowerCase() !== "svg" && "ownerSVGElement" in el;
-    const originalContainer = container || document.body;
     let isEnd = false;
     let is3d = false;
     let n = 3;
     let transformOrigin!: number[];
+    let targetTransformOrigin!: number[];
     let targetMatrix!: number[];
 
     const offsetContainer = getOffsetInfo(container, container, true).offsetParent;
 
-    if (prevMatrix) {
-        container = target.parentElement;
-    }
+    // if (prevMatrix) {
+    //     isEnd = target === container;
+    //     if (prevMatrix.length > 10) {
+    //         is3d = true;
+    //         n = 4;
+    //     }
+    //     container = target.parentElement;
+    // }
 
     while (el && !isEnd) {
         const style: CSSStyleDeclaration = getComputedStyle(el);
         const tagName = el.tagName.toLowerCase();
         const position = style.position;
         const isFixed = position === "fixed";
-        const styleTransform = style.transform!;
-        let matrix: number[] = convertCSStoMatrix(getTransformMatrix(styleTransform));
+        let matrix: number[] = convertCSStoMatrix(getTransformMatrix(style.transform!));
 
-        if (!is3d && matrix.length === 16) {
+        // convert 3 to 4
+        const length = matrix.length;
+        if (!is3d && length === 16) {
             is3d = true;
             n = 4;
             const matrixesLength = matrixes.length;
@@ -156,44 +225,23 @@ export function caculateMatrixStack(
                 matrixes[i] = convertDimension(matrixes[i], 3, 4);
             }
         }
-        if (is3d && matrix.length === 9) {
+        if (is3d && length === 9) {
             matrix = convertDimension(matrix, 3, 4);
         }
-
-        let offsetLeft = (el as HTMLElement).offsetLeft;
-        let offsetTop = (el as HTMLElement).offsetTop;
-
-        if (isFixed) {
-            const containerRect = (container || document.documentElement).getBoundingClientRect();
-
-            offsetLeft -= containerRect.left;
-            offsetTop  -= containerRect.top;
-        }
-        // svg
-        const isSVG = isUndefined(offsetLeft);
-        let hasNotOffset = isSVG;
-        let origin: number[];
-        // inner svg element
-        if (hasNotOffset && tagName !== "svg") {
-            origin = isWebkit
-                ? getBeforeTransformOrigin(el as SVGElement)
-                : getTransformOrigin(style).map(pos => parseFloat(pos));
-
-            hasNotOffset = false;
-
-            if (tagName === "g") {
-                offsetLeft = 0;
-                offsetTop = 0;
-            } else {
-                [
-                    offsetLeft, offsetTop, origin[0], origin[1],
-                ] = getSVGGraphicsOffset(el as SVGGraphicsElement, origin);
-            }
-        } else {
-            origin = getTransformOrigin(style).map(pos => parseFloat(pos));
-        }
+        const {
+            hasOffset,
+            isSVG,
+            origin,
+            targetOrigin,
+            offset: offsetPos,
+        } = getOffsetPosInfo(el, container, style, isFixed);
+        let [
+            offsetLeft,
+            offsetTop,
+        ] = offsetPos;
         if (tagName === "svg" && targetMatrix) {
             matrixes.push(
+                // scale matrix for svg's SVGElements.
                 getSVGMatrix(el as SVGSVGElement, n),
                 createIdentityMatrix(n),
             );
@@ -204,25 +252,32 @@ export function caculateMatrixStack(
             isStatic,
         } = getOffsetInfo(el, container);
 
-        if (isWebkit && !hasNotOffset && !isSVG && isStatic && position === "relative") {
+        if (IS_WEBKIT && hasOffset && !isSVG && isStatic && (position === "relative" || position === "static")) {
             offsetLeft -= offsetParent.offsetLeft;
             offsetTop -= offsetParent.offsetTop;
-
             isEnd = isEnd || isOffsetEnd;
         }
         let parentClientLeft = 0;
         let parentClientTop = 0;
 
-        if (!hasNotOffset && offsetContainer !== offsetParent) {
+        if (hasOffset && offsetContainer !== offsetParent) {
+            // border
             parentClientLeft = offsetParent.clientLeft;
             parentClientTop = offsetParent.clientTop;
         }
+        if (hasOffset && offsetParent === document.body) {
+            const margin = getBodyOffset(el, style);
+            offsetLeft += margin[0];
+            offsetTop += margin[1];
+        }
         matrixes.push(
+            // absolute matrix
             getAbsoluteMatrix(matrix, n, origin),
-            createOriginMatrix([
-                (hasNotOffset ? el : offsetLeft - el.scrollLeft + parentClientLeft) as any,
-                (hasNotOffset ? origin : offsetTop - el.scrollTop + parentClientTop) as any,
-            ], n),
+            // offset matrix (offsetPos + clientPos(border))
+            createOriginMatrix(hasOffset ? [
+                offsetLeft - el.scrollLeft + parentClientLeft,
+                offsetTop - el.scrollTop + parentClientTop,
+            ] : [el, origin] as any, n),
         );
         if (!targetMatrix) {
             targetMatrix = matrix;
@@ -230,55 +285,263 @@ export function caculateMatrixStack(
         if (!transformOrigin) {
             transformOrigin = origin;
         }
+        if (!targetTransformOrigin) {
+            targetTransformOrigin = targetOrigin;
+        }
         if (isEnd || isFixed) {
             break;
         } else {
             el = offsetParent;
             isEnd = isOffsetEnd;
         }
-
     }
-    let mat = prevMatrix ? convertDimension(prevMatrix, prevN!, n) : createIdentityMatrix(n);
-    let beforeMatrix = prevMatrix ? convertDimension(prevMatrix, prevN!, n) : createIdentityMatrix(n);
+    if (!targetMatrix) {
+        targetMatrix = createIdentityMatrix(n);
+    }
+    if (!transformOrigin) {
+        transformOrigin = [0, 0];
+    }
+    if (!targetTransformOrigin) {
+        targetTransformOrigin = [0, 0];
+    }
+    return {
+        offsetContainer,
+        matrixes,
+        targetMatrix,
+        transformOrigin,
+        targetOrigin: targetTransformOrigin,
+        is3d,
+    };
+}
+export function cacaulateElementInfo(
+    target?: SVGElement | HTMLElement | null,
+    container?: SVGElement | HTMLElement | null,
+    rootContainer: HTMLElement | SVGElement | null | undefined = container,
+    isAbsolute3d?: boolean,
+    state?: Partial<MoveableManagerState> | false,
+) {
+    // const prevMatrix = state ? state.beforeMatrix : undefined;
+    // const prevRootMatrix = state ? state.rootMatrix : undefined;
+    // const prevN = state ? (state.is3d ? 4 : 3) : undefined;
+    let width: number = 0;
+    let height: number = 0;
+    let rotation = 0;
+    let allResult: {} = {};
+
+    if (state) {
+        width = state.width!;
+        height = state.height!;
+    } else if (target) {
+        const style = getComputedStyle(target);
+
+        width = (target as HTMLElement).offsetWidth;
+        height = (target as HTMLElement).offsetHeight;
+
+        if (isUndefined(width)) {
+            [width, height] = getSize(target, style, true);
+        }
+    }
+
+    if (target) {
+        const result = caculateMatrixStack(
+            target, container, rootContainer, isAbsolute3d,
+            // prevMatrix, prevRootMatrix, prevN,
+        );
+        const position = caculateMoveablePosition(
+            result.allMatrix,
+            result.transformOrigin,
+            width, height,
+        );
+        allResult = {
+            ...result,
+            ...position,
+        };
+        const rotationPosition = caculateMoveablePosition(
+            result.allMatrix, [50, 50], 100, 100,
+        );
+        rotation = getRotationRad([rotationPosition.pos1, rotationPosition.pos2], rotationPosition.direction);
+    }
+    const n = isAbsolute3d ? 4 : 3;
+    return {
+        width,
+        height,
+        rotation,
+        // rootMatrix: number[];
+        // beforeMatrix: number[];
+        // offsetMatrix: number[];
+        // allMatrix: number[];
+        // targetMatrix: number[];
+        // targetTransform: string;
+        // transformOrigin: number[];
+        // targetOrigin: number[];
+        // is3d: boolean;
+        rootMatrix: createIdentityMatrix(n),
+        beforeMatrix: createIdentityMatrix(n),
+        offsetMatrix: createIdentityMatrix(n),
+        allMatrix: createIdentityMatrix(n),
+        targetMatrix: createIdentityMatrix(n),
+        targetTransform: "",
+        transformOrigin: [0, 0],
+        targetOrigin: [0, 0],
+        is3d: !!isAbsolute3d,
+        // left: number;
+        // top: number;
+        // right: number;
+        // bottom: number;
+        // origin: number[];
+        // pos1: number[];
+        // pos2: number[];
+        // pos3: number[];
+        // pos4: number[];
+        // direction: 1 | -1;
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        origin: [0, 0],
+        pos1: [0, 0],
+        pos2: [0, 0],
+        pos3: [0, 0],
+        pos4: [0, 0],
+        direction: 1,
+        ...allResult,
+    };
+}
+export function getElementInfo(
+    target: SVGElement | HTMLElement,
+    container?: SVGElement | HTMLElement | null,
+    rootContainer: SVGElement | HTMLElement | null | undefined = container,
+) {
+    return cacaulateElementInfo(target, container, rootContainer, true);
+}
+export function caculateMatrixStack(
+    target: SVGElement | HTMLElement,
+    container?: SVGElement | HTMLElement | null,
+    rootContainer: SVGElement | HTMLElement | null | undefined = container,
+    isAbsolute3d?: boolean,
+    // prevMatrix?: number[],
+    // prevRootMatrix?: number[],
+    // prevN?: number,
+) {
+    const {
+        matrixes,
+        is3d,
+        targetMatrix: prevTargetMatrix,
+        transformOrigin,
+        targetOrigin,
+        offsetContainer,
+    } = getMatrixStackInfo(target, container); // prevMatrix
+    const {
+        matrixes: rootMatrixes,
+        is3d: isRoot3d,
+    } = getMatrixStackInfo(offsetContainer, rootContainer); // prevRootMatrix
+
+    // if (rootContainer === document.body) {
+    //     console.log(offsetContainer, rootContainer, rootMatrixes);
+    // }
+    const isNext3d = isAbsolute3d || isRoot3d || is3d;
+    const n = isNext3d ? 4 : 3;
+    const isSVGGraphicElement = target.tagName.toLowerCase() !== "svg" && "ownerSVGElement" in target;
+    const originalContainer = container || document.body;
+    let targetMatrix = prevTargetMatrix;
+    // let allMatrix = prevMatrix ? convertDimension(prevMatrix, prevN!, n) : createIdentityMatrix(n);
+    // let rootMatrix = prevRootMatrix ? convertDimension(prevRootMatrix, prevN!, n) : createIdentityMatrix(n);
+    // let beforeMatrix = prevMatrix ? convertDimension(prevMatrix, prevN!, n) : createIdentityMatrix(n);
+    let allMatrix = createIdentityMatrix(n);
+    let rootMatrix = createIdentityMatrix(n);
+    let beforeMatrix = createIdentityMatrix(n);
     let offsetMatrix = createIdentityMatrix(n);
     const length = matrixes.length;
     const endContainer = getOffsetInfo(originalContainer, originalContainer, true).offsetParent;
 
+    rootMatrixes.reverse();
     matrixes.reverse();
+
+    if (!is3d && isNext3d) {
+        targetMatrix = convertDimension(targetMatrix, 3, 4);
+        matrixes.forEach((matrix, i) => {
+            matrixes[i] = convertDimension(matrix, 3, 4);
+        });
+    }
+    if (!isRoot3d && isNext3d) {
+        rootMatrixes.forEach((matrix, i) => {
+            rootMatrixes[i] = convertDimension(matrix, 3, 4);
+        });
+    }
+
+    // rootMatrix = (...) -> container -> offset -> absolute -> offset -> absolute(targetMatrix)
+    // beforeMatrix = (... -> container -> offset -> absolute) -> offset -> absolute(targetMatrix)
+    // offsetMatrix = (... -> container -> offset -> absolute -> offset) -> absolute(targetMatrix)
+
+    // if (!prevRootMatrix) {
+    rootMatrixes.forEach(matrix => {
+        rootMatrix = multiply(rootMatrix, matrix, n);
+    });
+    // }
     matrixes.forEach((matrix, i) => {
         if (length - 2 === i) {
-            beforeMatrix = mat.slice();
+            // length - 3
+            beforeMatrix = allMatrix.slice();
         }
         if (length - 1 === i) {
-            offsetMatrix = mat.slice();
+            // length - 2
+            offsetMatrix = allMatrix.slice();
         }
 
-        if (isObject(matrix[n - 1])) {
-            [matrix[n - 1], matrix[2 * n - 1]] =
+        // caculate for SVGElement
+        if (isObject(matrix[n * (n - 1)])) {
+            [matrix[n * (n - 1)], matrix[n * (n - 1) + 1]] =
                 getSVGOffset(
-                    matrix[n - 1] as any,
+                    matrix[n * (n - 1)] as any,
                     endContainer,
                     n,
-                    matrix[2 * n - 1] as any,
-                    mat,
+                    matrix[n * (n - 1) + 1] as any,
+                    allMatrix,
                     matrixes[i + 1],
                 );
         }
-        mat = multiply(
-            mat,
-            matrix,
-            n,
-        );
+        allMatrix = multiply(allMatrix, matrix, n);
     });
     const isMatrix3d = !isSVGGraphicElement && is3d;
-    const transform = `${isMatrix3d ? "matrix3d" : "matrix"}(${
-        convertMatrixtoCSS(isSVGGraphicElement && targetMatrix.length === 16
-            ? convertDimension(targetMatrix, 4, 3) : targetMatrix)
-        })`;
 
-    return [
-        beforeMatrix, offsetMatrix, mat, targetMatrix, transform, transformOrigin, is3d,
-    ];
+    if (!targetMatrix) {
+        targetMatrix = createIdentityMatrix(isMatrix3d ? 4 : 3);
+    }
+    const targetTransform = makeMatrixCSS(
+        isSVGGraphicElement && targetMatrix.length === 16
+            ? convertDimension(targetMatrix, 4, 3) : targetMatrix,
+        isMatrix3d,
+    );
+
+    rootMatrix = ignoreDimension(rootMatrix, n, n);
+
+    return {
+        rootMatrix,
+        beforeMatrix,
+        offsetMatrix,
+        allMatrix,
+        targetMatrix,
+        targetTransform,
+        transformOrigin,
+        targetOrigin,
+        is3d: isNext3d,
+    };
+}
+export function makeMatrixCSS(matrix: number[], is3d: boolean = matrix.length > 9) {
+    return `${is3d ? "matrix3d" : "matrix"}(${convertMatrixtoCSS(matrix, !is3d).join(",")})`;
+}
+export function getSVGViewBox(el: SVGSVGElement) {
+    const clientWidth = el.clientWidth;
+    const clientHeight = el.clientHeight;
+    const viewBox = el.viewBox;
+    const baseVal = (viewBox && viewBox.baseVal) || { x: 0, y: 0, width: 0, height: 0 };
+
+    return {
+        x: baseVal.x,
+        y: baseVal.y,
+        width: baseVal.width || clientWidth,
+        height: baseVal.height || clientHeight,
+    };
 }
 export function getSVGMatrix(
     el: SVGSVGElement,
@@ -286,13 +549,14 @@ export function getSVGMatrix(
 ) {
     const clientWidth = el.clientWidth;
     const clientHeight = el.clientHeight;
-    const viewBox = (el as SVGSVGElement).viewBox.baseVal;
-    const viewBoxWidth = viewBox.width || clientWidth;
-    const viewBoxHeight = viewBox.height || clientHeight;
+    const {
+        width: viewBoxWidth,
+        height: viewBoxHeight,
+    } = getSVGViewBox(el);
     const scaleX = clientWidth / viewBoxWidth;
     const scaleY = clientHeight / viewBoxHeight;
 
-    const preserveAspectRatio = (el as SVGSVGElement).preserveAspectRatio.baseVal;
+    const preserveAspectRatio = el.preserveAspectRatio.baseVal;
     // https://developer.mozilla.org/en-US/docs/Web/SVG/Attribute/preserveAspectRatio
     const align = preserveAspectRatio.align;
     // 1 : meet 2: slice
@@ -316,11 +580,10 @@ export function getSVGMatrix(
         translate[0] = (clientWidth - viewBoxWidth) / 2 * xAlign;
         translate[1] = (clientHeight - viewBoxHeight) / 2 * yAlign;
     }
-
     const scaleMatrix = createScaleMatrix(scale, n);
     [
-        scaleMatrix[n - 1],
-        scaleMatrix[2 * n - 1],
+        scaleMatrix[n * (n - 1)],
+        scaleMatrix[n * (n - 1) + 1],
     ] = translate;
 
     return getAbsoluteMatrix(
@@ -337,8 +600,7 @@ export function getSVGGraphicsOffset(
         return [0, 0];
     }
     const bbox = el.getBBox();
-    const svgElement = el.ownerSVGElement!;
-    const viewBox = svgElement.viewBox.baseVal;
+    const viewBox = getSVGViewBox(el.ownerSVGElement!);
     const left = bbox.x - viewBox.x;
     const top = bbox.y - viewBox.y;
 
@@ -353,12 +615,7 @@ export function caculatePosition(matrix: number[], pos: number[], n: number) {
     return caculate(matrix, convertPositionMatrix(pos, n), n);
 }
 export function caculatePoses(matrix: number[], width: number, height: number, n: number) {
-    const pos1 = caculatePosition(matrix, [0, 0], n);
-    const pos2 = caculatePosition(matrix, [width, 0], n);
-    const pos3 = caculatePosition(matrix, [0, height], n);
-    const pos4 = caculatePosition(matrix, [width, height], n);
-
-    return [pos1, pos2, pos3, pos4];
+    return [[0, 0], [width, 0], [0, height], [width, height]].map(pos => caculatePosition(matrix, pos, n));
 }
 export function getRect(poses: number[][]) {
     const posesX = poses.map(pos => pos[0]);
@@ -387,11 +644,20 @@ export function getSVGOffset(
     container: HTMLElement | SVGElement,
     n: number, origin: number[], beforeMatrix: number[], absoluteMatrix: number[]) {
 
-    const [width, height] = getSize(el);
-    const containerRect = container.getBoundingClientRect();
+    const [width, height] = getSize(el, undefined, true);
+    const containerClientRect = container.getBoundingClientRect();
+    let margin = [0, 0];
+
+    if (container === document.body) {
+        margin = getBodyOffset(el);
+    }
     const rect = el.getBoundingClientRect();
-    const rectLeft = rect.left - containerRect.left + container.scrollLeft;
-    const rectTop = rect.top - containerRect.top + container.scrollTop;
+    const rectLeft
+        = rect.left - containerClientRect.left + container.scrollLeft
+        - (container.clientLeft || 0) + margin[0];
+    const rectTop
+        = rect.top - containerClientRect.top + container.scrollTop
+        - (container.clientTop || 0) + margin[1];
     const rectWidth = rect.width;
     const rectHeight = rect.height;
     const mat = multiplies(
@@ -441,15 +707,7 @@ export function getSVGOffset(
     }
     return offset.map(p => Math.round(p));
 }
-export function caculateMoveablePosition(matrix: number[], origin: number[], width: number, height: number): [
-    number[],
-    number[],
-    number[],
-    number[],
-    number[],
-    number[],
-    1 | -1,
-] {
+export function caculateMoveablePosition(matrix: number[], origin: number[], width: number, height: number) {
     const is3d = matrix.length === 16;
     const n = is3d ? 4 : 3;
     let [
@@ -484,28 +742,37 @@ export function caculateMoveablePosition(matrix: number[], origin: number[], wid
     ];
     const pos1Rad = getRad(center, [x1, y1]);
     const pos2Rad = getRad(center, [x2, y2]);
-    const direction =
+    const direction: 1 | -1 =
         (pos1Rad < pos2Rad && pos2Rad - pos1Rad < Math.PI) || (pos1Rad > pos2Rad && pos2Rad - pos1Rad < -Math.PI)
             ? 1 : -1;
 
-    return [
-        [left, top, right, bottom],
-        [originX, originY],
-        [x1, y1],
-        [x2, y2],
-        [x3, y3],
-        [x4, y4],
+    return {
+        left,
+        top,
+        right,
+        bottom,
+        origin: [originX, originY],
+        pos1: [x1, y1],
+        pos2: [x2, y2],
+        pos3: [x3, y3],
+        pos4: [x4, y4],
         direction,
-    ];
+    };
 }
-
+export function getDistSize(vec: number[]) {
+    return Math.sqrt(vec[0] * vec[0] + vec[1] * vec[1]);
+}
+export function getDiagonalSize(pos1: number[], pos2: number[]) {
+    return getDistSize([
+        pos2[0] - pos1[0],
+        pos2[1] - pos1[1],
+    ]);
+}
 export function getLineStyle(pos1: number[], pos2: number[], rad: number = getRad(pos1, pos2)) {
-    const distX = pos2[0] - pos1[0];
-    const distY = pos2[1] - pos1[1];
-    const width = Math.sqrt(distX * distX + distY * distY);
+    const width = getDiagonalSize(pos1, pos2);
 
     return {
-        transform: `translate(${pos1[0]}px, ${pos1[1]}px) rotate(${rad}rad)`,
+        transform: `translateY(-50%) translate(${pos1[0]}px, ${pos1[1]}px) rotate(${rad}rad)`,
         width: `${width}px`,
     };
 }
@@ -539,14 +806,14 @@ export function getSize(
     if ((isOffset || isBoxSizing) && hasOffset) {
         return [width, height];
     }
+    if (!hasOffset && target.tagName.toLowerCase() !== "svg") {
+        const bbox = (target as SVGGraphicsElement).getBBox();
+        return [bbox.width, bbox.height];
+    }
+
     width = target.clientWidth;
     height = target.clientHeight;
 
-    if (!hasOffset && !width && !height) {
-        const bbox = (target as SVGGraphicsElement).getBBox();
-
-        return [bbox.width, bbox.height];
-    }
     if (isOffset || isBoxSizing) {
         const borderLeft = parseFloat(style.borderLeftWidth!) || 0;
         const borderRight = parseFloat(style.borderRightWidth!) || 0;
@@ -576,123 +843,69 @@ export function getRotationRad(
     return getRad(direction > 0 ? poses[0] : poses[1], direction > 0 ? poses[1] : poses[0]);
 }
 export function getTargetInfo(
-    target?: HTMLElement | SVGElement,
+    moveableElement?: HTMLElement | null,
+    target?: HTMLElement | SVGElement | null,
     container?: HTMLElement | SVGElement | null,
     parentContainer?: HTMLElement | SVGElement | null,
+    rootContainer?: HTMLElement | SVGElement | null,
     state?: Partial<MoveableManagerState> | false | undefined,
-): Partial<MoveableManagerState> {
-    let left = 0;
-    let top = 0;
-    let right = 0;
-    let bottom = 0;
-    let origin = [0, 0];
-    let pos1 = [0, 0];
-    let pos2 = [0, 0];
-    let pos3 = [0, 0];
-    let pos4 = [0, 0];
-    let offsetMatrix = createIdentityMatrix3();
-    let beforeMatrix = createIdentityMatrix3();
-    let matrix = createIdentityMatrix3();
-    let targetMatrix = createIdentityMatrix3();
-    let width = 0;
-    let height = 0;
-    let transformOrigin = [0, 0];
-    let direction: 1 | -1 = 1;
+) {
     let beforeDirection: 1 | -1 = 1;
-    let is3d = false;
-    let targetTransform = "";
     let beforeOrigin = [0, 0];
-    let clientRect = resetClientRect();
-    let containerRect = resetClientRect();
-    let rotation = 0;
+    let targetClientRect = resetClientRect();
+    let containerClientRect = resetClientRect();
+    let moveableClientRect = resetClientRect();
 
-    const prevMatrix = state ? state.beforeMatrix : undefined;
-    const prevN = state ? (state.is3d ? 4 : 3) : undefined;
-
+    const result = cacaulateElementInfo(
+        target, container!, rootContainer!, false, state,
+    );
     if (target) {
-        if (state) {
-            width = state.width!;
-            height = state.height!;
-        } else {
-            const style = getComputedStyle(target);
-
-            width = (target as HTMLElement).offsetWidth;
-            height = (target as HTMLElement).offsetHeight;
-
-            if (isUndefined(width)) {
-                [width, height] = getSize(target, style, true);
-            }
-        }
-        [
-            beforeMatrix, offsetMatrix, matrix,
-            targetMatrix,
-            targetTransform, transformOrigin, is3d,
-        ] = caculateMatrixStack(target, container!, prevMatrix, prevN);
-
-        [
-            [left, top, right, bottom],
-            origin,
-            pos1,
-            pos2,
-            pos3,
-            pos4,
-            direction,
-        ] = caculateMoveablePosition(matrix, transformOrigin, width, height);
-
-        const n = is3d ? 4 : 3;
-        let beforePos = [0, 0];
-
-        [
-            beforePos, beforeOrigin, , , , , beforeDirection,
-        ] = caculateMoveablePosition(offsetMatrix, plus(transformOrigin, getOrigin(targetMatrix, n)), width, height);
-
-        beforeOrigin = [
-            beforeOrigin[0] + beforePos[0] - left,
-            beforeOrigin[1] + beforePos[1] - top,
-        ];
-
-        clientRect = getClientRect(target);
-        containerRect = getClientRect(
-            getOffsetInfo(parentContainer, parentContainer, true).offsetParent || document.body,
+        const n = result.is3d ? 4 : 3;
+        const beforePosition = caculateMoveablePosition(
+            result.offsetMatrix,
+            plus(result.transformOrigin, getOrigin(result.targetMatrix, n)),
+            result.width, result.height,
         );
-        rotation = getRotationRad([pos1, pos2], direction);
+        beforeDirection = beforePosition.direction;
+        beforeOrigin = plus(
+            beforePosition.origin,
+            [beforePosition.left - result.left, beforePosition.top - result.top],
+        );
+
+        targetClientRect = getClientRect(target);
+        containerClientRect = getClientRect(
+            getOffsetInfo(parentContainer, parentContainer, true).offsetParent || document.body,
+            true,
+        );
+        if (moveableElement) {
+            moveableClientRect = getClientRect(moveableElement);
+        }
     }
 
     return {
-        rotation,
-        containerRect,
+        targetClientRect,
+        containerClientRect,
+        moveableClientRect,
         beforeDirection,
-        direction,
-        target,
-        left,
-        top,
-        right,
-        bottom,
-        pos1,
-        pos2,
-        pos3,
-        pos4,
-        width,
-        height,
-        beforeMatrix,
-        matrix,
-        targetTransform,
-        offsetMatrix,
-        targetMatrix,
-        is3d,
         beforeOrigin,
-        origin,
-        transformOrigin,
-        clientRect,
+        target,
+        ...result,
     };
 }
 export function resetClientRect(): MoveableClientRect {
-    return { left: 0, right: 0, top: 0, width: 0, height: 0, bottom: 0 };
+    return {
+        left: 0, right: 0,
+        top: 0, bottom: 0,
+        width: 0, height: 0,
+        clientLeft: 0, clientTop: 0,
+        clientWidth: 0, clientHeight: 0,
+        scrollWidth: 0, scrollHeight: 0,
+    };
 }
-export function getClientRect(el: HTMLElement | SVGElement) {
+export function getClientRect(el: HTMLElement | SVGElement, isExtends?: boolean) {
     const { left, width, top, bottom, right, height } = el.getBoundingClientRect();
 
-    return {
+    const rect: MoveableClientRect = {
         left,
         right,
         top,
@@ -700,6 +913,16 @@ export function getClientRect(el: HTMLElement | SVGElement) {
         width,
         height,
     };
+
+    if (isExtends) {
+        rect.clientLeft = el.clientLeft;
+        rect.clientTop = el.clientTop;
+        rect.clientWidth = el.clientWidth;
+        rect.clientHeight = el.clientHeight;
+        rect.scrollWidth = el.scrollWidth;
+        rect.scrollHeight = el.scrollHeight;
+    }
+    return rect;
 }
 export function getDirection(target: SVGElement | HTMLElement) {
     if (!target) {
@@ -772,12 +995,12 @@ export function getOrientationDirection(pos: number[], pos1: number[], pos2: num
 }
 export function isInside(pos: number[], pos1: number[], pos2: number[], pos3: number[], pos4: number[]) {
     const k1 = getOrientationDirection(pos, pos1, pos2);
-    const k2 = getOrientationDirection(pos, pos2, pos4);
-    const k3 = getOrientationDirection(pos, pos4, pos1);
+    const k2 = getOrientationDirection(pos, pos2, pos3);
+    const k3 = getOrientationDirection(pos, pos3, pos1);
 
-    const k4 = getOrientationDirection(pos, pos2, pos4);
-    const k5 = getOrientationDirection(pos, pos4, pos3);
-    const k6 = getOrientationDirection(pos, pos3, pos2);
+    const k4 = getOrientationDirection(pos, pos2, pos3);
+    const k5 = getOrientationDirection(pos, pos3, pos4);
+    const k6 = getOrientationDirection(pos, pos4, pos2);
     const signs1 = [k1, k2, k3];
     const signs2 = [k4, k5, k6];
 
@@ -793,7 +1016,7 @@ export function isInside(pos: number[], pos1: number[], pos2: number[], pos3: nu
 }
 
 export function fillParams<T extends IObject<any>>(
-    moveable: MoveableManager,
+    moveable: any,
     e: any,
     params: Pick<T, Exclude<keyof T, "target" | "clientX" | "clientY" | "inputEvent" | "datas" | "currentTarget">>,
 ): T {
@@ -802,7 +1025,7 @@ export function fillParams<T extends IObject<any>>(
     if (!datas.datas) {
         datas.datas = {};
     }
-    return {
+    const nextParams = {
         ...params,
         target: moveable.state.target,
         clientX: e.clientX,
@@ -811,21 +1034,61 @@ export function fillParams<T extends IObject<any>>(
         currentTarget: moveable,
         datas: datas.datas,
     } as any;
+
+    if (datas.isStartEvent) {
+        datas.lastEvent = nextParams;
+    } else {
+        datas.isStartEvent = true;
+    }
+    return nextParams;
+}
+export function fillEndParams<T extends IObject<any>>(
+    moveable: any,
+    e: any,
+    params: Pick<T, Exclude<
+        keyof T,
+        "target" | "clientX" | "clientY" | "inputEvent" |
+        "datas" | "currentTarget" | "lastEvent" | "isDrag" | "isDouble">
+    > & { isDrag?: boolean },
+): T {
+    const datas = e.datas;
+    const isDrag = "isDrag" in params ? params.isDrag : e.isDrag;
+
+    if (!datas.datas) {
+        datas.datas = {};
+    }
+
+    return {
+        isDrag,
+        ...params,
+        target: moveable.state.target,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        inputEvent: e.inputEvent,
+        currentTarget: moveable,
+        lastEvent: datas.lastEvent,
+        isDouble: e.isDouble,
+        datas: datas.datas,
+    } as any;
 }
 
-export function triggerEvent<T extends IObject<any>, U extends keyof T>(
-    moveable: MoveableManager<T>,
-    name: U & string,
-    params: T[U] extends ((e: infer P) => any) | undefined ? P : {},
+export function triggerEvent<T extends IObject<any> = MoveableProps, U extends keyof T = string>(
+    moveable: any,
+    name: U,
+    params: T[U] extends ((e: infer P) => any) | undefined ? P : IObject<any>,
+    isManager?: boolean,
 ): any {
-    return moveable.triggerEvent(name, params);
+    return moveable.triggerEvent(name, params, isManager);
 }
 
 export function getComputedStyle(el: HTMLElement | SVGElement, pseudoElt?: string | null) {
     return window.getComputedStyle(el, pseudoElt);
 }
 
-export function filterAbles(ables: Able[], methods: Array<keyof Able>) {
+export function filterAbles(
+    ables: Able[], methods: Array<keyof Able>,
+    triggerAblesSimultaneously?: boolean,
+) {
     const enabledAbles: IObject<boolean> = {};
     const ableGroups: IObject<boolean> = {};
 
@@ -835,7 +1098,7 @@ export function filterAbles(ables: Able[], methods: Array<keyof Able>) {
         if (enabledAbles[name] || !methods.some(method => able[method])) {
             return false;
         }
-        if (able.ableGroup) {
+        if (!triggerAblesSimultaneously && able.ableGroup) {
             if (ableGroups[able.ableGroup]) {
                 return false;
             }
@@ -868,4 +1131,261 @@ export function selectValue<T = any>(...values: any[]): T {
     }
 
     return values[length];
+}
+
+export function groupBy<T>(arr: T[], func: (el: T, index: number, arr: T[]) => any) {
+    const groups: T[][] = [];
+    const groupKeys: any[] = [];
+
+    arr.forEach((el, index) => {
+        const groupKey = func(el, index, arr);
+        const keyIndex = groupKeys.indexOf(groupKey);
+        const group = groups[keyIndex] || [];
+
+        if (keyIndex === -1) {
+            groupKeys.push(groupKey);
+            groups.push(group);
+        }
+        group.push(el);
+    });
+    return groups;
+}
+export function groupByMap<T>(arr: T[], func: (el: T, index: number, arr: T[]) => string | number) {
+    const groups: T[][] = [];
+    const groupKeys: IObject<T[]> = {};
+
+    arr.forEach((el, index) => {
+        const groupKey = func(el, index, arr);
+        let group = groupKeys[groupKey];
+
+        if (!group) {
+            group = [];
+            groupKeys[groupKey] = group;
+            groups.push(group);
+        }
+        group.push(el);
+    });
+    return groups;
+}
+export function flat<T>(arr: T[][]): T[] {
+    return arr.reduce((prev, cur) => {
+        return prev.concat(cur);
+    }, []);
+}
+
+export function equalSign(a: number, b: number) {
+    return (a >= 0 && b >= 0) || (a < 0 && b < 0);
+}
+
+export function maxOffset(...args: number[]) {
+    args.sort((a, b) => Math.abs(b) - Math.abs(a));
+
+    return args[0];
+}
+export function minOffset(...args: number[]) {
+    args.sort((a, b) => Math.abs(a) - Math.abs(b));
+
+    return args[0];
+}
+
+export function caculateInversePosition(matrix: number[], pos: number[], n: number) {
+    return caculate(
+        invert(matrix, n),
+        convertPositionMatrix(pos, n),
+        n,
+    );
+}
+export function convertDragDist(state: MoveableManagerState, e: any) {
+    const {
+        is3d,
+        rootMatrix,
+    } = state;
+    const n = is3d ? 4 : 3;
+    [
+        e.distX, e.distY,
+    ] = caculateInversePosition(rootMatrix, [e.distX, e.distY], n);
+
+    return e;
+}
+
+export function caculatePadding(
+    matrix: number[], pos: number[],
+    transformOrigin: number[], origin: number[], n: number,
+) {
+    return minus(caculatePosition(matrix, plus(transformOrigin, pos), n), origin);
+}
+
+export function convertCSSSize(value: number, size: number, isRelative?: boolean) {
+    return isRelative ? `${value / size * 100}%` : `${value}px`;
+}
+
+export function moveControlPos(
+    controlPoses: ControlPose[],
+    index: number,
+    dist: number[],
+    isRect?: boolean,
+) {
+    const { direction, sub } = controlPoses[index];
+    const dists = controlPoses.map(() => [0, 0]);
+    const directions = direction ? direction.split("") : [];
+
+    if (isRect && index < 8) {
+        const verticalDirection = directions.filter(dir => dir === "w" || dir === "e")[0];
+        const horizontalDirection = directions.filter(dir => dir === "n" || dir === "s")[0];
+
+        dists[index] = dist;
+        controlPoses.forEach((controlPose, i) => {
+            const {
+                direction: controlDir,
+            } = controlPose;
+
+            if (!controlDir) {
+                return;
+            }
+            if (controlDir.indexOf(verticalDirection) > -1) {
+                dists[i][0] = dist[0];
+            }
+            if (controlDir.indexOf(horizontalDirection) > -1) {
+                dists[i][1] = dist[1];
+            }
+        });
+        if (verticalDirection) {
+            dists[1][0] = dist[0] / 2;
+            dists[5][0] = dist[0] / 2;
+        }
+        if (horizontalDirection) {
+            dists[3][1] = dist[1] / 2;
+            dists[7][1] = dist[1] / 2;
+        }
+    } else if (direction && !sub) {
+        directions.forEach(dir => {
+            const isVertical = dir === "n" || dir === "s";
+
+            controlPoses.forEach((controlPose, i) => {
+                const {
+                    direction: dirDir,
+                    horizontal: dirHorizontal,
+                    vertical: dirVertical,
+                } = controlPose;
+
+                if (!dirDir || dirDir.indexOf(dir) === -1) {
+                    return;
+                }
+                dists[i] = [
+                    isVertical || !dirHorizontal ? 0 : dist[0],
+                    !isVertical || !dirVertical ? 0 : dist[1],
+                ];
+            });
+        });
+    } else {
+        dists[index] = dist;
+    }
+
+    return dists;
+}
+
+export function getTinyDist(v: number) {
+    return Math.abs(v) <= TINY_NUM ? 0 : v;
+}
+
+export function directionCondition(e: any) {
+    if (e.isRequest) {
+        if (e.requestAble === "resizable" || e.requestAble === "scalable") {
+            return e.parentDirection!;
+        } else {
+            return false;
+        }
+    }
+    return hasClass(e.inputEvent.target, prefix("direction"));
+}
+
+export function invertObject<T extends IObject<any>>(obj: T): InvertTypes<T> {
+    const nextObj: IObject<any> = {};
+
+    for (const name in obj) {
+        nextObj[obj[name]] = name;
+    }
+    return nextObj as any;
+}
+
+export function getTransform(transforms: string[], index: number) {
+    const beforeFunctionTexts = transforms.slice(0, index < 0 ? undefined : index);
+    const targetFunctionText = transforms[index] || "";
+    const afterFunctionTexts = index < 0 ? [] : transforms.slice(index);
+    const beforeFunctions = parse(beforeFunctionTexts);
+    const targetFunctions = parse([targetFunctionText]);
+    const afterFunctions = parse(afterFunctionTexts);
+
+    const beforeFunctionMatrix = toMat(beforeFunctions);
+    const afterFunctionMatrix = toMat(afterFunctions);
+    const allFunctionMatrix = multiply(
+        beforeFunctionMatrix,
+        afterFunctionMatrix,
+        4,
+    );
+    return {
+        transforms,
+        beforeFunctionMatrix,
+        targetFunctionMatrix: toMat(targetFunctions),
+        afterFunctionMatrix,
+        allFunctionMatrix,
+        beforeFunctions,
+        targetFunction: targetFunctions[0],
+        afterFunctions,
+        beforeFunctionTexts,
+        targetFunctionText,
+        afterFunctionTexts,
+    };
+}
+
+export function isArrayFormat<T = any>(arr: any): arr is ArrayFormat<T> {
+    if (!arr || !isObject(arr)) {
+        return false;
+    }
+    return isArray(arr) || "length" in arr;
+}
+
+export function getRefTargets(targets: MoveableRefType | MoveableRefType[]) {
+    if (!targets) {
+        return [];
+    }
+    const userTargets = isArrayFormat(targets) ? [].slice.call(targets) : [targets];
+
+    return userTargets.map(target => {
+        if (!target) {
+            return null;
+        }
+        if (isString(target)) {
+            return target;
+        }
+        if ("current" in target) {
+            return target.current;
+        }
+        return target;
+    }) as Array<SVGElement | HTMLElement | string | null | undefined>;
+}
+
+export function getElementTargets(
+    targets: Array<SVGElement | HTMLElement | string | null | undefined>,
+    selectorMap: IObject<Array<HTMLElement | SVGElement>>,
+) {
+    const elementTargets: Array<SVGElement | HTMLElement> = [];
+    targets.forEach(target => {
+        if (!target) {
+            return;
+        }
+        if (isString(target)) {
+            if (selectorMap[target]) {
+                elementTargets.push(...selectorMap[target]);
+            }
+            return;
+        }
+        elementTargets.push(target);
+    });
+
+    return elementTargets;
+}
+
+export function minmax(...values: number[]) {
+    return [Math.min(...values), Math.max(...values)];
 }

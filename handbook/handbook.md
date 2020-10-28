@@ -100,9 +100,10 @@ You can Drag, Resize, Scale, Rotate, Warp, Pinch, Snap.
 
 ### Options
 * [throttleDrag](https://daybrush.com/moveable/release/latest/doc/Moveable.html#throttleDrag): throttle of x, y when drag. (default: 0)
+* [throttleDrag](https://daybrush.com/moveable/release/latest/doc/Moveable.html#throttleDragRotate): throttle of angle of x, y when drag. (default: 0)
 * [dragArea](https://daybrush.com/moveable/release/latest/doc/Moveable.html#dragArea): Add an event to the moveable area instead of the target for stopPropagation. (default: false)
 
-### Vanilla Exmaple
+### Vanilla Example
 
 ```ts
 import Moveable from "moveable";
@@ -112,6 +113,7 @@ const moveable = new Moveable(document.body, {
     target: targets,
     draggable: true,
     throttleDrag: 0,
+    throttleDragRotate: 0,
 });
 
 const frame = {
@@ -243,7 +245,6 @@ export class AppComponent {
 * [throttleResize](https://daybrush.com/moveable/release/latest/doc/Moveable.html#throttleResize): throttle of width, height when resize. (default: 0)
 * [keepRatio](https://daybrush.com/moveable/release/latest/doc/Moveable.html#keepRatio): When resize or scale, keeps a ratio of the width, height. (default: false)
 * [baseDirection](https://daybrush.com/moveable/release/latest/doc/Moveable.html#baseDirection): Target's base direcition using top, left, right, bottom (top: -1, left: -1, right: 1, bottom: 1) (default: [-1, -1])
-* [keepRatio](https://daybrush.com/moveable/release/latest/doc/Moveable.html#keepRatio): When resize or scale, keeps a ratio of the width, height. (default: false)
 
 
 ### Vanilla Example
@@ -1229,7 +1230,7 @@ const moveable = new Moveable(document.body, {
 const frames = targets.map(() => ({
     translate: [0, 0],
 }));
-moveable.on("draGroupStart", ({ events }) => {
+moveable.on("dragGroupStart", ({ events }) => {
     events.forEach((ev, i) => {
         const frame = frames[i];
         ev.set(frame.translate);
@@ -1299,9 +1300,9 @@ import {
 <ngx-moveable
     [target]="targets"
     [draggable]="true"
-    (onDragGroupStart)="onDragGroupStart($event)"
-    (onDragGroup)="onDragGroup($event)"
-    (onDragGroupEnd)="onDragGroupEnd($event)"
+    (dragGroupStart)="onDragGroupStart($event)"
+    (dragGroup)="onDragGroup($event)"
+    (dragGroupEnd)="onDragGroupEnd($event)"
     />
 `,
 })
@@ -1500,9 +1501,9 @@ import {
 <ngx-moveable
     [target]="targets"
     [resizable]="true"
-    (onResizeGroupStart)="onResizeGroupStart($event)"
-    (onResizeGroup)="onResizeGroup($event)"
-    (onResizeGroupEnd)="onResizeGroupEnd($event)"
+    (resizeGroupStart)="onResizeGroupStart($event)"
+    (resizeGroup)="onResizeGroup($event)"
+    (resizeGroupEnd)="onResizeGroupEnd($event)"
     />
 `,
 })
@@ -1719,9 +1720,9 @@ import {
 <ngx-moveable
     [target]="targets"
     [scalable]="true"
-    (onScaleGroupStart)="onScaleGroupStart($event)"
-    (onScaleGroup)="onScaleGroup($event)"
-    (onScaleGroupEnd)="onScaleGroupEnd($event)"
+    (scaleGroupStart)="onScaleGroupStart($event)"
+    (scaleGroup)="onScaleGroup($event)"
+    (scaleGroupEnd)="onScaleGroupEnd($event)"
     />
 `,
 })
@@ -1924,9 +1925,9 @@ import {
 <ngx-moveable
     [target]="targets"
     [rotatable]="true"
-    (onRotateGroupStart)="onRotateGroupStart($event)"
-    (onRotateGroup)="onRotateGroup($event)"
-    (onRotateroupEnd)="onRotateGroupEnd($event)"
+    (rotateGroupStart)="onRotateGroupStart($event)"
+    (rotateGroup)="onRotateGroup($event)"
+    (rotateroupEnd)="onRotateGroupEnd($event)"
     />
 `,
 })
@@ -2255,10 +2256,10 @@ moveable.classname = "moveable2";
 
 ### Default CSS
 
-* `rCS1cac4f3` is The hash value of the class name, which can be changed at any time.
-
+* `rCS4nn8ek` is The hash value of the class name, which can be changed at any time.
+* All classes have a prefix of `moveable-`.
 ```css
-.rCS1cac4f3 {
+.rCS4nn8ek {
 	position: fixed;
 	width: 0;
 	height: 0;
@@ -2266,14 +2267,15 @@ moveable.classname = "moveable2";
 	top: 0;
 	z-index: 3000;
 }
-.rCS1cac4f3 .moveable-control-box{
+.rCS4nn8ek .moveable-control-box{
     z-index: 0;
 }
-.rCS1cac4f3 .moveable-line, .rCS1cac4f3 .moveable-control{
+.rCS4nn8ek .moveable-line, .rCS4nn8ek .moveable-control{
 	left: 0;
-	top: 0;
+    top: 0;
+    will-change: transform;
 }
-.rCS1cac4f3 .moveable-control{
+.rCS4nn8ek .moveable-control{
 	position: absolute;
 	width: 14px;
 	height: 14px;
@@ -2285,32 +2287,64 @@ moveable.classname = "moveable2";
     margin-left: -7px;
     z-index: 10;
 }
-.rCS1cac4f3 .moveable-line{
+.rCS4nn8ek .moveable-line{
 	position: absolute;
 	width: 1px;
 	height: 1px;
 	background: #4af;
 	transform-origin: 0px 0.5px;
 }
-.rCS1cac4f3 .moveable-line.moveable-rotation-line{
+.rCS4nn8ek .moveable-line.moveable-dashed{
+    box-sizing: border-box;
+    background: transparent;
+}
+.rCS4nn8ek .moveable-line.moveable-dashed.moveable-horizontal{
+    border-top: 1px dashed #4af;
+}
+.rCS4nn8ek .moveable-line.moveable-dashed.moveable-vertical{
+    border-left: 1px dashed #4af;
+}
+.rCS4nn8ek .moveable-line.moveable-dashed:before{
+    position: absolute;
+    content: attr(data-size);
+    color: #4af;
+    font-size: 12px;
+    font-weight: bold;
+}
+.rCS4nn8ek .moveable-line.moveable-dashed.moveable-horizontal:before{
+    left: 50%;
+    transform: translateX(-50%);
+    bottom: 5px;
+}
+.rCS4nn8ek .moveable-line.moveable-dashed.moveable-vertical:before{
+    top: 50%;
+    transform: translateY(-50%);
+    left: 5px;
+}
+.rCS4nn8ek .moveable-line.moveable-rotation-line{
 	height: 40px;
 	width: 1px;
-	transform-origin: 0.5px 39.5px;
+    transform-origin: 0.5px 39.5px;
+    top: -40px;
 }
-.rCS1cac4f3 .moveable-line.moveable-rotation-line .moveable-control{
+.rCS4nn8ek .moveable-line.moveable-rotation-line .moveable-control{
 	border-color: #4af;
 	background:#fff;
 	cursor: alias;
 }
-.rCS1cac4f3 .moveable-line.moveable-vertical.moveable-bold{
+.rCS4nn8ek .moveable-line.moveable-vertical{
+    transform: translateX(-50%);
+}
+.rCS4nn8ek .moveable-line.moveable-horizontal{
+    transform: translateY(-50%);
+}
+.rCS4nn8ek .moveable-line.moveable-vertical.moveable-bold{
     width: 2px;
-    margin-left: -1px;
 }
-.rCS1cac4f3 .moveable-line.moveable-horizontal.moveable-bold{
+.rCS4nn8ek .moveable-line.moveable-horizontal.moveable-bold{
     height: 2px;
-    margin-top: -1px;
 }
-.rCS1cac4f3 .moveable-control.moveable-origin{
+.rCS4nn8ek .moveable-control.moveable-origin{
 	border-color: #f55;
 	background: #fff;
 	width: 12px;
@@ -2319,45 +2353,25 @@ moveable.classname = "moveable2";
 	margin-left: -6px;
 	pointer-events: none;
 }
-.rCS1cac4f3 .moveable-direction.moveable-e,
-.rCS1cac4f3 .moveable-direction.moveable-w{
-	cursor: ew-resize;
-}
-.rCS1cac4f3 .moveable-direction.moveable-s,
-.rCS1cac4f3 .moveable-direction.moveable-n{
-	cursor: ns-resize;
-}
-.rCS1cac4f3 .moveable-direction.moveable-nw,
-.rCS1cac4f3 .moveable-direction.moveable-se,
-.rCS1cac4f3.moveable-reverse .moveable-direction.moveable-ne,
-.rCS1cac4f3.moveable-reverse .moveable-direction.moveable-sw {
-	cursor: nwse-resize;
-}
-.rCS1cac4f3 .moveable-direction.moveable-ne,
-.rCS1cac4f3 .moveable-direction.moveable-sw,
-.rCS1cac4f3.moveable-reverse .moveable-direction.moveable-nw,
-.rCS1cac4f3.moveable-reverse .moveable-direction.moveable-se {
-	cursor: nesw-resize;
-}
-.rCS1cac4f3 .moveable-group{
+.rCS4nn8ek .moveable-group{
     z-index: -1;
 }
-.rCS1cac4f3 .moveable-area{
+.rCS4nn8ek .moveable-area{
     position: absolute;
 }
-.rCS1cac4f3 .moveable-area-pieces{
+.rCS4nn8ek .moveable-area-pieces{
     position: absolute;
     top: 0;
     left: 0;
     display: none;
 }
-.rCS1cac4f3 .moveable-area.moveable-avoid{
+.rCS4nn8ek .moveable-area.moveable-avoid{
     pointer-events: none;
 }
-.rCS1cac4f3 .moveable-area.moveable-avoid+.moveable-area-pieces {
+.rCS4nn8ek .moveable-area.moveable-avoid+.moveable-area-pieces{
     display: block;
 }
-.rCS1cac4f3 .moveable-area-piece{
+.rCS4nn8ek .moveable-area-piece{
     position: absolute;
 }
 

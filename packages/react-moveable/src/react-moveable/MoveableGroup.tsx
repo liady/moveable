@@ -1,11 +1,11 @@
 import MoveableManager from "./MoveableManager";
-import { GroupableProps, MoveableManagerProps } from "./types";
+import { GroupableProps, MoveableManagerProps, RectInfo } from "./types";
 import ChildrenDiffer from "@egjs/children-differ";
-import { getAbleDragger } from "./getAbleDragger";
+import { getAbleGesto, getTargetAbleGesto } from "./gesto/getAbleGesto";
 import Groupable from "./ables/Groupable";
 import { MIN_NUM, MAX_NUM, TINY_NUM } from "./consts";
 import { getTargetInfo, throttle, getAbsolutePosesByState, equals } from "./utils";
-import { plus, rotate } from "@moveable/matrix";
+import { plus, rotate } from "./matrix";
 
 function getMaxPos(poses: number[][][], index: number) {
     return Math.max(...poses.map(([pos1, pos2, pos3, pos4]) => {
@@ -88,8 +88,11 @@ function getGroupRect(moveables: MoveableManager[], rotation: number) {
     }
     return [minX, minY, groupWidth, groupHeight];
 }
-
-class MoveableGroup extends MoveableManager<GroupableProps, any> {
+/**
+ * @namespace Moveable.Group
+ * @description You can make targets moveable.
+ */
+class MoveableGroup extends MoveableManager<GroupableProps> {
     public static defaultProps = {
         ...MoveableManager.defaultProps,
         transformOrigin: ["50%", "50%"],
@@ -98,10 +101,11 @@ class MoveableGroup extends MoveableManager<GroupableProps, any> {
         keepRatio: true,
         targets: [],
         defaultGroupRotate: 0,
+        defaultGroupOrigin: "50% 50%",
     };
     public differ: ChildrenDiffer<HTMLElement | SVGElement> = new ChildrenDiffer();
     public moveables: MoveableManager[] = [];
-    public rotation: number = 0;
+    public transformOrigin = "50% 50%";
 
     public updateEvent(prevProps: MoveableManagerProps<GroupableProps>) {
         const state = this.state;
@@ -111,8 +115,8 @@ class MoveableGroup extends MoveableManager<GroupableProps, any> {
             state.target = this.areaElement;
 
             this.controlBox.getElement().style.display = "block";
-            this.targetDragger = getAbleDragger(this, state.target!, "targetAbles", "Group");
-            this.controlDragger = getAbleDragger(this, this.controlBox.getElement(), "controlAbles", "GroupControl");
+            this.targetGesto = getTargetAbleGesto(this, state.target, "Group");
+            this.controlGesto = getAbleGesto(this, this.controlBox.getElement(), "controlAbles", "GroupControl");
         }
         const isContainerChanged = !equals(prevProps.container, props.container);
 
@@ -144,16 +148,29 @@ class MoveableGroup extends MoveableManager<GroupableProps, any> {
         if (!isTarget || (type !== "" && props.updateGroup)) {
             // reset rotataion
             this.rotation = props.defaultGroupRotate!;
+            this.transformOrigin = props.defaultGroupOrigin || "50% 50%";
+            this.scale = [1, 1];
+
         }
         const rotation = this.rotation;
+        const scale = this.scale;
         const [left, top, width, height] = getGroupRect(this.moveables, rotation);
 
         // tslint:disable-next-line: max-line-length
-        target.style.cssText += `left:0px;top:0px;width:${width}px; height:${height}px;transform:rotate(${rotation}deg)`;
+        target.style.cssText += `left:0px;top:0px; transform-origin: ${this.transformOrigin}; width:${width}px; height:${height}px;transform:rotate(${rotation}deg)`
+            + ` scale(${scale[0] >= 0 ? 1 : -1}, ${scale[1] >= 0 ? 1 : -1})`;
         state.width = width;
         state.height = height;
 
-        const info = getTargetInfo(target, this.controlBox.getElement(), this.getContainer(), state);
+        const container = this.getContainer();
+        const info = getTargetInfo(
+            this.controlBox.getElement(),
+            target,
+            this.controlBox.getElement(),
+            this.getContainer(),
+            this.props.rootContainer || container,
+            state,
+        );
         const pos = [info.left!, info.top!];
         [
             info.pos1,
@@ -164,22 +181,31 @@ class MoveableGroup extends MoveableManager<GroupableProps, any> {
         info.origin = plus(pos, info.origin!);
         info.beforeOrigin = plus(pos, info.beforeOrigin!);
 
-        const clientRect = info.clientRect!;
+        const clientRect = info.targetClientRect!;
 
         clientRect.top += (top - info.top!) - state.top;
         clientRect.left += (left - info.left!) - state.left;
 
+        const direction = scale[0] * scale[1] > 0 ? 1 : -1;
         this.updateState(
             {
                 ...info,
+                direction,
+                beforeDirection: direction,
                 left: left - info.left!,
                 top: top - info.top!,
             },
             isSetState,
         );
     }
-    public triggerEvent(name: string, e: any): any {
-        if (name.indexOf("Group") > -1) {
+    public getRect(): RectInfo {
+        return {
+            ...super.getRect(),
+            children: this.moveables.map(child => child.getRect()),
+        };
+    }
+    public triggerEvent(name: string, e: any, isManager?: boolean): any {
+        if (isManager || name.indexOf("Group") > -1) {
             return super.triggerEvent(name as any, e);
         }
     }
@@ -188,4 +214,31 @@ class MoveableGroup extends MoveableManager<GroupableProps, any> {
     }
 }
 
+/**
+ * Sets the initial rotation of the group. (default 0)
+ * @name Moveable.Group#defaultGroupRotate
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   target: [].slice.call(document.querySelectorAll(".target")),
+ *   defaultGroupRotate: 0,
+ * });
+ *
+ * moveable.defaultGroupRotate = 40;
+ */
+
+/**
+ * Sets the initial origin of the group. (default 0)
+ * @name Moveable.Group#defaultGroupOrigin
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   target: [].slice.call(document.querySelectorAll(".target")),
+ *   defaultGroupOrigin: "50% 50%",
+ * });
+ *
+ * moveable.defaultGroupOrigin = "20% 40%";
+ */
 export default MoveableGroup;

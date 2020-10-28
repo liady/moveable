@@ -9,10 +9,12 @@ const external = {
     "@daybrush/utils": "utils",
     "css-styled": "css-styled",
     "framework-utils": "framework-utils",
-    "@daybrush/drag": "Dragger",
+    "gesto": "Gesto",
     "@egjs/agent": "eg.Agent",
     "@egjs/children-differ": "eg.ChildrenDiffer",
     "@moveable/matrix": "@moveable/matrix",
+    "@scena/dragscroll": "@scena/dragscroll",
+    "css-to-mat": "css-to-mat",
 };
 
 
@@ -31,7 +33,7 @@ export default builder([
         sourcemap: false,
         input: "src/index.ts",
         output: "./dist/moveable.esm.js",
-        exports: "default",
+        exports: "named",
         format: "es",
         plugins: [reactPlugin],
         external,
@@ -40,7 +42,7 @@ export default builder([
         sourcemap: false,
         input: "src/index.ts",
         output: "./dist/moveable.cjs.js",
-        exports: "default",
+        exports: "named",
         plugins: [reactPlugin],
         format: "cjs",
         external,

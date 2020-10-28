@@ -1,32 +1,35 @@
-import { Client } from "@daybrush/drag";
-import { triggerEvent, fillParams } from "../utils";
-import MoveableManager from "../MoveableManager";
-import { PinchableProps, Able, SnappableState, OnPinchStart, OnPinch, OnPinchEnd } from "../types";
-import MoveableGroup from "../MoveableGroup";
-import { getRad } from "@moveable/matrix";
+import { triggerEvent, fillParams, fillEndParams } from "../utils";
+import {
+    PinchableProps, Able, SnappableState,
+    OnPinchStart, OnPinch, OnPinchEnd, MoveableManagerInterface, MoveableGroupInterface,
+} from "../types";
 
-function getRotatiion(touches: Client[]) {
-    return getRad([
-        touches[0].clientX,
-        touches[0].clientY,
-    ], [
-        touches[1].clientX,
-        touches[1].clientY,
-    ]) / Math.PI * 180;
-}
-
+/**
+ * @namespace Moveable.Pinchable
+ * @description Whether or not target can be pinched with draggable, resizable, scalable, rotatable (default: false)
+ */
 export default {
     name: "pinchable",
     updateRect: true,
     props: {
         pinchable: Boolean,
-        pinchThreshold: Number,
+    } as const,
+    events: {
+        onPinchStart: "pinchStart",
+        onPinch: "pinch",
+        onPinchEnd: "pinchEnd",
+        onPinchGroupStart: "pinchGroupStart",
+        onPinchGroup: "pinchGroup",
+        onPinchGroupEnd: "pinchGroupEnd",
+    } as const,
+    dragStart() {
+        return true;
     },
     pinchStart(
-        moveable: MoveableManager<PinchableProps, SnappableState>,
+        moveable: MoveableManagerInterface<PinchableProps, SnappableState>,
         e: any,
     ) {
-        const { datas, clientX, clientY, touches, inputEvent, targets } = e;
+        const { datas, targets, angle, originalDatas } = e;
         const { pinchable, ables } = moveable.props;
 
         if (!pinchable) {
@@ -54,33 +57,40 @@ export default {
         if (!isPinch) {
             return false;
         }
-        const parentRotate = getRotatiion(touches);
-
         pinchAbles.forEach(able => {
-            datas[able.name + "Datas"] = {};
+            originalDatas[able.name] = originalDatas[able.name] || {};
+
+            if (!able[controlEventName]) {
+                return;
+            }
             const ableEvent: any = {
-                datas: datas[able.name + "Datas"],
-                clientX,
-                clientY,
-                inputEvent,
-                parentRotate,
-                pinchFlag: true,
+                ...e,
+                datas: originalDatas[able.name],
+                parentRotate: angle,
+                isPinch: true,
             };
             able[controlEventName]!(moveable, ableEvent);
         });
 
-        moveable.state.snapDirection = [0, 0];
+        moveable.state.snapRenderInfo = {
+            request: e.isRequest,
+            direction: [0, 0],
+        };
         return isPinch;
     },
     pinch(
-        moveable: MoveableManager<PinchableProps>,
+        moveable: MoveableManagerInterface<PinchableProps>,
         e: any,
     ) {
-        const { datas, clientX, clientY, scale: pinchScale, distance, touches, inputEvent, targets } = e;
+        const {
+            datas, scale: pinchScale, distance,
+            originalDatas,
+            inputEvent, targets,
+            angle,
+        } = e;
         if (!datas.isPinch) {
             return;
         }
-        const parentRotate = getRotatiion(touches);
         const parentDistance = distance * (1 - 1 / pinchScale);
         const params = fillParams<OnPinch>(moveable, e, {}) as any;
 
@@ -94,29 +104,31 @@ export default {
         const controlEventName = `drag${targets ? "Group" : ""}Control` as "dragControl";
 
         ables.forEach(able => {
+            if (!able[controlEventName]) {
+                return;
+            }
             able[controlEventName]!(moveable, {
-                clientX,
-                clientY,
-                datas: datas[able.name + "Datas"],
+                ...e,
+                datas: originalDatas[able.name],
                 inputEvent,
                 parentDistance,
-                parentRotate,
-                pinchFlag: true,
+                parentRotate: angle,
+                isPinch: true,
             } as any);
         });
         return params;
     },
     pinchEnd(
-        moveable: MoveableManager<PinchableProps>,
+        moveable: MoveableManagerInterface<PinchableProps>,
         e: any,
     ) {
-        const { datas, clientX, clientY, isPinch, inputEvent, targets } = e;
+        const { datas, isPinch, inputEvent, targets, originalDatas } = e;
         if (!datas.isPinch) {
             return;
         }
         const eventName = `onPinch${targets ? "Group" : ""}End` as "onPinchEnd";
 
-        const params = fillParams<OnPinchEnd>(moveable, e, { isDrag: isPinch }) as any;
+        const params = fillEndParams<OnPinchEnd>(moveable, e, { isDrag: isPinch }) as any;
 
         if (targets) {
             params.targets = targets;
@@ -126,24 +138,158 @@ export default {
         const controlEventName = `drag${targets ? "Group" : ""}ControlEnd` as "dragControlEnd";
 
         ables.forEach(able => {
+            if (!able[controlEventName]) {
+                return;
+            }
             able[controlEventName]!(moveable, {
-                clientX,
-                clientY,
+                ...e,
                 isDrag: isPinch,
-                datas: datas[able.name + "Datas"],
+                datas: originalDatas[able.name],
                 inputEvent,
-                pinchFlag: true,
+                isPinch: true,
             } as any);
         });
         return isPinch;
     },
-    pinchGroupStart(moveable: MoveableGroup, e: any) {
+    pinchGroupStart(moveable: MoveableGroupInterface<any, any>, e: any) {
         return this.pinchStart(moveable, { ...e, targets: moveable.props.targets });
     },
-    pinchGroup(moveable: MoveableGroup, e: any) {
+    pinchGroup(moveable: MoveableGroupInterface, e: any) {
         return this.pinch(moveable, { ...e, targets: moveable.props.targets });
     },
-    pinchGroupEnd(moveable: MoveableGroup, e: any) {
+    pinchGroupEnd(moveable: MoveableGroupInterface, e: any) {
         return this.pinchEnd(moveable, { ...e, targets: moveable.props.targets });
     },
 };
+
+/**
+ * Whether or not target can be pinched with draggable, resizable, scalable, rotatable (default: false)
+ * @name Moveable.Pinchable#pinchable
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body);
+ *
+ * moveable.pinchable = true;
+ */
+
+/**
+ * When the pinch starts, the pinchStart event is called with part of scaleStart, rotateStart, resizeStart
+ * @memberof Moveable.Pinchable
+ * @event pinchStart
+ * @param {Moveable.Pinchable.OnPinchStart} - Parameters for the pinchStart event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     rotatable: true,
+ *     scalable: true,
+ *     pinchable: true, // ["rotatable", "scalable"]
+ * });
+ * moveable.on("pinchStart", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("rotateStart", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("scaleStart", ({ target }) => {
+ *     console.log(target);
+ * });
+ */
+/**
+ * When pinching, the pinch event is called with part of scale, rotate, resize
+ * @memberof Moveable.Pinchable
+ * @event pinch
+ * @param {Moveable.Pinchable.OnPinch} - Parameters for the pinch event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     rotatable: true,
+ *     scalable: true,
+ *     pinchable: true, // ["rotatable", "scalable"]
+ * });
+ * moveable.on("pinch", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("rotate", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("scale", ({ target }) => {
+ *     console.log(target);
+ * });
+ */
+/**
+ * When the pinch finishes, the pinchEnd event is called.
+ * @memberof Moveable.Pinchable
+ * @event pinchEnd
+ * @param {Moveable.Pinchable.OnPinchEnd} - Parameters for the pinchEnd event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     rotatable: true,
+ *     scalable: true,
+ *     pinchable: true, // ["rotatable", "scalable"]
+ * });
+ * moveable.on("pinchEnd", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("rotateEnd", ({ target }) => {
+ *     console.log(target);
+ * });
+ * moveable.on("scaleEnd", ({ target }) => {
+ *     console.log(target);
+ * });
+ */
+
+/**
+ * When the group pinch starts, the `pinchGroupStart` event is called.
+ * @memberof Moveable.Pinchable
+ * @event pinchGroupStart
+ * @param {Moveable.Pinchable.OnPinchGroupStart} - Parameters for the `pinchGroupStart` event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     target: [].slice.call(document.querySelectorAll(".target")),
+ *     pinchable: true
+ * });
+ * moveable.on("pinchGroupStart", ({ targets }) => {
+ *     console.log("onPinchGroupStart", targets);
+ * });
+ */
+
+/**
+ * When the group pinch, the `pinchGroup` event is called.
+ * @memberof Moveable.Pinchable
+ * @event pinchGroup
+ * @param {Moveable.Pinchable.OnPinchGroup} - Parameters for the `pinchGroup` event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     target: [].slice.call(document.querySelectorAll(".target")),
+ *     pinchable: true
+ * });
+ * moveable.on("pinchGroup", ({ targets, events }) => {
+ *     console.log("onPinchGroup", targets);
+ * });
+ */
+
+/**
+ * When the group pinch finishes, the `pinchGroupEnd` event is called.
+ * @memberof Moveable.Pinchable
+ * @event pinchGroupEnd
+ * @param {Moveable.Pinchable.OnPinchGroupEnd} - Parameters for the `pinchGroupEnd` event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     target: [].slice.call(document.querySelectorAll(".target")),
+ *     pinchable: true
+ * });
+ * moveable.on("pinchGroupEnd", ({ targets, isDrag }) => {
+ *     console.log("onPinchGroupEnd", targets, isDrag);
+ * });
+ */

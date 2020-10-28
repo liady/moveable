@@ -1,7 +1,7 @@
-import MoveableManager from "../MoveableManager";
-import { ScrollableProps, OnScroll } from "../types";
+
+import { ScrollableProps, OnScroll, MoveableManagerInterface, MoveableGroupInterface } from "../types";
 import { triggerEvent, fillParams } from "../utils";
-import MoveableGroup from "../MoveableGroup";
+import DragScroll from "@scena/dragscroll";
 
 function getDefaultScrollPosition(e: { scrollContainer: HTMLElement, direction: number[] }) {
     const scrollContainer = e.scrollContainer;
@@ -11,7 +11,10 @@ function getDefaultScrollPosition(e: { scrollContainer: HTMLElement, direction: 
         scrollContainer.scrollTop,
     ];
 }
-
+/**
+ * @namespace Moveable.Scrollable
+ * @description Whether or not target can be scrolled to the scroll container (default: false)
+ */
 export default {
     name: "scrollable",
     canPinch: true,
@@ -19,126 +22,190 @@ export default {
         scrollable: Boolean,
         scrollContainer: Object,
         scrollThreshold: Number,
-    },
-    dragStart(moveable: MoveableManager<ScrollableProps>, e: any) {
+        getScrollPosition: Function,
+    } as const,
+    events: {
+        onScroll: "scroll",
+        onScrollGroup: "scrollGroup",
+    } as const,
+    dragStart(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
         const props = moveable.props;
         const {
             scrollContainer = moveable.getContainer(),
         } = props;
 
-        const scrollClientRect = scrollContainer.getBoundingClientRect();
-        const datas = e.datas;
-        datas.scrollContainer = scrollContainer;
-        datas.scrollRect = {
-            left: scrollClientRect.left,
-            top: scrollClientRect.top,
-            width: scrollClientRect.width,
-            height: scrollClientRect.height,
-        };
+        const dragScroll = new DragScroll();
 
-        datas.isScroll = true;
+        e.datas.dragScroll = dragScroll;
+
+        const gestoName = e.isControl ? "controlGesto" : "targetGesto";
+        const targets = e.targets;
+
+        dragScroll.on("scroll", ({ container, direction }) => {
+            const params = fillParams<OnScroll>(moveable, e, {
+                scrollContainer: container,
+                direction,
+            }) as any;
+
+            const eventName = targets ? "onScrollGroup" : "onScroll" as any;
+            if (targets) {
+                params.targets = targets;
+            }
+            triggerEvent(moveable, eventName, params);
+        }).on("move", ({ offsetX, offsetY }) => {
+            moveable[gestoName].scrollBy(offsetX, offsetY, e.inputEvent, false);
+        });
+        dragScroll.dragStart(e, {
+            container: scrollContainer as HTMLElement,
+        });
     },
-    drag(moveable: MoveableManager<ScrollableProps>, e: any) {
-        return this.checkScroll(moveable, e);
-    },
-    dragAfter(moveable: MoveableManager<ScrollableProps>, e: any) {
-        this.checkScrollAfter(moveable, e);
-    },
-    dragEnd(moveable: MoveableManager<ScrollableProps>, e: any) {
-        e.datas.isScroll = false;
-    },
-    dragGroupStart(moveable: MoveableGroup, e: any) {
-        this.dragStart(moveable, e);
-    },
-    dragGroup(moveable: MoveableGroup, e: any) {
-        return this.drag(moveable, {...e, targets: moveable.props.targets });
-    },
-    dragGroupAfter(moveable: MoveableManager<ScrollableProps>, e: any) {
-        this.checkScrollAfter(moveable, e);
-    },
-    dragGroupEnd(moveable: MoveableGroup, e: any) {
-        this.dragEnd(moveable, e);
-    },
-    checkScroll(moveable: MoveableManager<ScrollableProps>, e: any) {
+    checkScroll(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
         const {
-            datas,
-            clientX,
-            clientY,
-            isScroll,
-            targets,
-        } = e;
-        datas.direction = null;
-        if (!datas.isScroll) {
+            dragScroll,
+        } = e.datas;
+        if (!dragScroll) {
             return;
         }
-        if (!isScroll) {
-            datas.prevClientX = clientX;
-            datas.prevClientY = clientY;
-        }
-
         const {
+            scrollContainer = moveable.getContainer(),
             scrollThreshold = 0,
             getScrollPosition = getDefaultScrollPosition,
         } = moveable.props;
-        const {
-            scrollContainer,
-            scrollRect,
-        } = datas;
 
-        const direction = [0, 0];
-
-        if (scrollRect.top > clientY - scrollThreshold) {
-            direction[1] = -1;
-        } else if (scrollRect.top + scrollRect.height < clientY + scrollThreshold) {
-            direction[1] = 1;
-        }
-        if (scrollRect.left > clientX - scrollThreshold) {
-            direction[0] = -1;
-        } else if (scrollRect.left + scrollRect.width < clientX + scrollThreshold) {
-            direction[0] = 1;
-        }
-        if (!direction[0] && !direction[1]) {
-            return;
-        }
-
-        datas.direction = direction;
-        datas.prevPos = getScrollPosition({ scrollContainer, direction });
-        const params = fillParams<OnScroll>(moveable, e, {
-            scrollContainer,
-            direction,
-        }) as any;
-
-        const eventName = targets ? "onScrollGroup" : "onScroll" as any;
-        if (targets) {
-            params.targets = targets;
-        }
-        triggerEvent(moveable, eventName, params);
+        dragScroll.drag(e, {
+            container: scrollContainer,
+            threshold: scrollThreshold,
+            getScrollPosition: (ev: any) => {
+                return getScrollPosition({ scrollContainer: ev.container, direction: ev.direction });
+            },
+        });
 
         return true;
     },
-    checkScrollAfter(moveable: MoveableManager<ScrollableProps>, e: any) {
-        const { datas, inputEvent } = e;
-        const { direction, prevPos } = datas;
-
-        if (
-            !datas.isScroll
-            || !datas.direction
-        ) {
-            return;
-        }
-        const {
-            getScrollPosition = getDefaultScrollPosition,
-        } = moveable.props;
-        const {
-            scrollContainer,
-        } = datas;
-        const nextPos = getScrollPosition({ scrollContainer, direction });
-        const offsetX = nextPos[0] - prevPos[0];
-        const offsetY = nextPos[1] - prevPos[1];
-
-        if (!offsetX && !offsetY) {
-            return;
-        }
-        moveable.targetDragger.scrollBy(direction[0] ? offsetX : 0, direction[1] ? offsetY : 0, inputEvent, false);
+    drag(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
+        return this.checkScroll(moveable, e);
+    },
+    dragEnd(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
+        e.datas.dragScroll.dragEnd();
+        e.datas.dragScroll = null;
+    },
+    dragControlStart(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
+        return this.dragStart(moveable, { ...e, isControl: true });
+    },
+    dragControl(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
+        return this.drag(moveable, e);
+    },
+    dragControlEnd(moveable: MoveableManagerInterface<ScrollableProps>, e: any) {
+        return this.dragEnd(moveable, e);
+    },
+    dragGroupStart(moveable: MoveableGroupInterface, e: any) {
+        return this.dragStart(moveable, { ...e, targets: moveable.props.targets });
+    },
+    dragGroup(moveable: MoveableGroupInterface, e: any) {
+        return this.drag(moveable, { ...e, targets: moveable.props.targets });
+    },
+    dragGroupEnd(moveable: MoveableGroupInterface, e: any) {
+        return this.dragEnd(moveable, { ...e, targets: moveable.props.targets });
+    },
+    dragGroupControlStart(moveable: MoveableGroupInterface, e: any) {
+        return this.dragStart(moveable, { ...e, targets: moveable.props.targets, isControl: true });
+    },
+    dragGroupContro(moveable: MoveableGroupInterface, e: any) {
+        return this.drag(moveable, { ...e, targets: moveable.props.targets });
+    },
+    dragGroupControEnd(moveable: MoveableGroupInterface, e: any) {
+        return this.dragEnd(moveable, { ...e, targets: moveable.props.targets });
     },
 };
+
+/**
+ * Whether or not target can be scrolled to the scroll container (default: false)
+ * @name Moveable.Scrollable#scrollable
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   scrollable: true,
+ *   scrollContainer: document.body,
+ *   scrollThreshold: 0,
+ *   getScrollPosition: ({ scrollContainer }) => ([scrollContainer.scrollLeft, scrollContainer.scrollTop]),
+ * });
+ *
+ * moveable.scrollable = true;
+ */
+
+/**
+ * The container to which scroll is applied (default: container)
+ * @name Moveable.Scrollable#scrollContainer
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   scrollable: true,
+ *   scrollContainer: document.body,
+ *   scrollThreshold: 0,
+ *   getScrollPosition: ({ scrollContainer }) => ([scrollContainer.scrollLeft, scrollContainer.scrollTop]),
+ * });
+ */
+/**
+ * Expand the range of the scroll check area. (default: 0)
+ * @name Moveable.Scrollable#scrollThreshold
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   scrollable: true,
+ *   scrollContainer: document.body,
+ *   scrollThreshold: 0,
+ *   getScrollPosition: ({ scrollContainer }) => ([scrollContainer.scrollLeft, scrollContainer.scrollTop]),
+ * });
+ */
+
+/**
+ * Sets a function to get the scroll position. (default: Function)
+ * @name Moveable.Scrollable#getScrollPosition
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *   scrollable: true,
+ *   scrollContainer: document.body,
+ *   scrollThreshold: 0,
+ *   getScrollPosition: ({ scrollContainer }) => ([scrollContainer.scrollLeft, scrollContainer.scrollTop]),
+ * });
+ *
+ */
+
+/**
+ * When the drag cursor leaves the scrollContainer, the `scroll` event occur to scroll.
+ * @memberof Moveable.Scrollable
+ * @event scroll
+ * @param {Moveable.Scrollable.OnScroll} - Parameters for the `scroll` event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     target: document.querySelector(".target"),
+ * });
+ * moveable.on("scroll", ({ scrollContainer, direction }) => {
+ *   scrollContainer.scrollLeft += direction[0] * 10;
+ *   scrollContainer.scrollTop += direction[1] * 10;
+ * });
+ */
+
+/**
+ * When the drag cursor leaves the scrollContainer, the `scrollGroup` event occur to scroll in group.
+ * @memberof Moveable.Scrollable
+ * @event scrollGroup
+ * @param {Moveable.Scrollable.OnScrollGroup} - Parameters for the `scrollGroup` event
+ * @example
+ * import Moveable from "moveable";
+ *
+ * const moveable = new Moveable(document.body, {
+ *     target: [].slice.call(document.querySelectorAll(".target")),
+ * });
+ * moveable.on("scroll", ({ scrollContainer, direction }) => {
+ *   scrollContainer.scrollLeft += direction[0] * 10;
+ *   scrollContainer.scrollTop += direction[1] * 10;
+ * });
+ */

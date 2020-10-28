@@ -2,6 +2,8 @@ import * as React from "react";
 import * as ReactDOM from "react-dom";
 import MoveableExample from "./MoveableExample";
 import { wait } from "./TestHelper";
+import { MOVEABLE_EVENTS, MOVEABLE_EVENTS_PROPS_MAP, MOVEABLE_EVENTS_MAP } from "../../src/react-moveable";
+import { camelize } from "@daybrush/utils";
 
 describe("test Moveable", () => {
     beforeEach(() => {
@@ -29,6 +31,8 @@ describe("test Moveable", () => {
         await wait(300);
 
         const state = moveable.innerMoveable.moveable.state;
+        expect(state.left).to.be.equals(2);
+        expect(state.top).to.be.equals(2);
         expect(state.width).to.be.equals(302);
         expect(state.height).to.be.equals(222);
         expect(moveable.innerMoveable.isInside(40, 40)).to.be.true;
@@ -130,8 +134,8 @@ describe("test Moveable", () => {
         }} />, document.querySelector(".container"));
 
         await wait(300);
-        const targetDragger = moveable.innerMoveable.moveable.targetDragger;
-        const controlDragger = moveable.innerMoveable.moveable.controlDragger;
+        const targetGesto = moveable.innerMoveable.moveable.targetGesto;
+        const controlGesto = moveable.innerMoveable.moveable.controlGesto;
 
         // When
         moveable.setState({
@@ -141,13 +145,22 @@ describe("test Moveable", () => {
         await wait(300);
 
         // Then
-        const nextTargetDragger = moveable.innerMoveable.moveable.targetDragger;
-        const nextControlDragger = moveable.innerMoveable.moveable.controlDragger;
+        const nextTargetGesto = moveable.innerMoveable.moveable.targetGesto;
+        const nextControlGesto = moveable.innerMoveable.moveable.controlGesto;
 
-        expect(targetDragger).to.be.ok;
-        expect(nextTargetDragger).to.be.ok;
-        expect(nextTargetDragger).to.be.not.equals(targetDragger);
-        expect(controlDragger).to.be.not.ok;
-        expect(nextControlDragger).to.be.not.ok;
+        expect(targetGesto).to.be.ok;
+        expect(nextTargetGesto).to.be.ok;
+        expect(nextTargetGesto).to.be.not.equals(targetGesto);
+        expect(controlGesto).to.be.not.ok;
+        expect(nextControlGesto).to.be.not.ok;
+    });
+    it ("check event validation", () => {
+        const map = MOVEABLE_EVENTS_PROPS_MAP;
+
+        for (const name in map) {
+            const result = (map as any)[name];
+
+            expect(camelize(`on ${result}`)).to.be.equals(name);
+        }
     });
 });

@@ -1,36 +1,110 @@
-import MoveableGroup from "./MoveableGroup";
-import { Able } from "./types";
-import MoveableManager from "./MoveableManager";
-import { hasClass, IObject, isFunction } from "@daybrush/utils";
-import { prefix } from "./utils";
+import { Able, MoveableGroupInterface, MoveableManagerInterface } from "./types";
+import CustomGesto, { setCustomDrag } from "./gesto/CustomGesto";
 
-export function triggerChildAble<T extends Able>(
-    moveable: MoveableGroup,
-    able: T,
-    type: keyof T & string,
-    datas: IObject<any>,
-    eachEvent: ((movebale: MoveableManager, datas: IObject<any>) => any) | IObject<any>,
-    callback?: (moveable: MoveableManager<any>, datas: IObject<any>, result: any, index: number) => any,
+export function fillChildEvents(
+    moveable: MoveableGroupInterface,
+    name: string,
+    e: any,
+): any[] {
+    const datas = e.originalDatas;
+
+    datas.groupable = datas.groupable || {};
+
+    const groupableDatas = datas.groupable;
+
+    groupableDatas.childDatas = groupableDatas.childDatas || [];
+
+    const childDatas = groupableDatas.childDatas;
+    const {
+        inputEvent,
+        isPinch,
+        clientX,
+        clientY,
+        distX,
+        distY,
+    } = e;
+
+    return moveable.moveables.map((child, i) => {
+        childDatas[i] = childDatas[i] || {};
+        childDatas[i][name] = childDatas[i][name] || {};
+
+        return {
+            inputEvent,
+            datas: childDatas[i][name],
+            originalDatas: childDatas[i],
+            isPinch,
+            clientX,
+            clientY,
+            distX,
+            distY,
+        };
+    });
+}
+export function triggerChildGesto(
+    moveable: MoveableGroupInterface<any, any>,
+    able: Able,
+    type: string,
+    delta: number[],
+    e: any,
+    isConvert: boolean,
 ) {
-    const name = able.name!;
-    const ableDatas = datas[name] || (datas[name] = []);
+    const isStart = !!type.match(/Start$/g);
     const isEnd = !!type.match(/End$/g);
-    const childs = moveable.moveables.map((child, i) => {
-        const childDatas = ableDatas[i] || (ableDatas[i] = {});
+    const isPinch = e.isPinch;
+    const datas = e.datas;
+    const events = fillChildEvents(moveable, able.name, e);
 
-        const childEvent = isFunction(eachEvent) ? eachEvent(child, childDatas) : eachEvent;
-        const result = (able as any)[type]!(child,  { ...childEvent, datas: childDatas, parentFlag: true });
+    const moveables = moveable.moveables;
+    const childs = events.map((ev, i) => {
+        const childMoveable = moveables[i];
+        let childEvent: any = ev;
 
-        result && callback && callback(child, childDatas, result, i);
+        if (isStart) {
+            childEvent = new CustomGesto().dragStart(delta, ev);
+        } else {
+            if (!childMoveable.state.gesto) {
+                childMoveable.state.gesto = datas.childGestos[i];
+            }
+            childEvent = setCustomDrag(ev, childMoveable.state, delta, isPinch, isConvert);
+        }
+        const result = (able as any)[type]!(childMoveable,  { ...childEvent, parentFlag: true });
 
         if (isEnd) {
-            child.state.dragger = null;
+            childMoveable.state.gesto = null;
+        }
+        return result;
+    });
+    if (isStart) {
+        datas.childGestos = moveables.map(child => child.state.gesto);
+    }
+    return childs;
+}
+export function triggerChildAble<T extends Able>(
+    moveable: MoveableGroupInterface<any, any>,
+    able: T,
+    type: keyof T & string,
+    e: any,
+    eachEvent: (movebale: MoveableManagerInterface<any, any>, ev: any) => any = (_, ev) => ev,
+    callback?: (moveable: MoveableManagerInterface<any, any>, ev: any, result: any, index: number) => any,
+) {
+    const isEnd = !!type.match(/End$/g);
+    const events = fillChildEvents(moveable, able.name, e);
+    const moveables = moveable.moveables;
+    const childs = events.map((ev, i) => {
+        const childMoveable = moveables[i];
+        let childEvent = ev;
+
+        childEvent = eachEvent(childMoveable, ev);
+
+        const result = (able as any)[type]!(childMoveable,  { ...childEvent, parentFlag: true });
+
+        result && callback && callback(childMoveable, ev, result, i);
+
+        if (isEnd) {
+            childMoveable.state.gesto = null;
         }
         return result;
     });
 
     return childs;
-}
-export function directionCondition(target: HTMLElement | SVGElement) {
-    return hasClass(target, prefix("direction"));
 }
